@@ -4,8 +4,8 @@
 # Script Summary: This script connects to SharePoint Online, retrieves the largest files over 100MB from document libraries, and exports the results to an Excel file with separate worksheets for each site. Each worksheet includes a pie chart showing total site size and a table of the largest libraries.
 
 # Config Variables
-$TenantAdminURL = "https://compraraau-admin.sharepoint.com/"
-$ExcelFilePath = "C:\Temp\LargeFiles-Miepol.xlsx"
+$TenantAdminURL = "https://tenant-admin.sharepoint.com/"
+$ExcelFilePath = "C:\Temp\LargeFiles.xlsx"
 
 # Import the ImportExcel module
 if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
