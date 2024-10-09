@@ -1,0 +1,35 @@
+Here are the features that will be included in all future scripts, formatted for clarity:
+
+Features to Include in Every Future Script:
+Script Comments at the Top:
+
+Author: Tim MacLatchy
+Date: Date of script creation or modification
+License: A brief MIT license
+Description: A concise description of the script’s purpose
+
+Check if any required modules are missing at the start of the script, and install them if necessary.
+
+Use a web-based login with MFA. Once logged in, the session should be reused throughout the script without needing additional authentication. If a login fails, output a clear explanation.
+
+Handle errors gracefully, providing clear and detailed error messages, especially when login fails. Ensure the console output is never incomplete due to an error.
+
+Provide detailed verbose logging and output at every step, so you can track each action in the console.
+
+Display progress bars for operations that take time, such as querying large datasets or processing multiple items.
+
+If saving output as Excel spreadsheet, prompt for the file location and name using a pop-up.
+
+Automatically adjust column widths when exporting data to Excel to ensure proper formatting and readability.
+
+Output files should be named based on the tenant name, the date, and the operation performed (e.g., tenantname_date_searchtype.xlsx).
+
+Ensure that Excel headers are searchable for easy filtering and sorting.
+
+Use delimiters (${}) around variable references inside strings to avoid parser errors.
+
+Include specific error handling for cmdlets (e.g., Write-Progress, Process-Site) to ensure the script runs without crashing and reports errors clearly.
+
+Always output the updated whole script, not just the updated part.
+
+Date format order should be date, month, year
