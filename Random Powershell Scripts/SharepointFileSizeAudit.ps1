@@ -1,5 +1,5 @@
 #Config Variables
-$TenantAdminURL = "https://waverleygymnasticscentre-admin.sharepoint.com/"
+$TenantAdminURL = "https://company-admin.sharepoint.com/"
 $CSVFilePath = "C:\Temp\LargeFiles-WGC.csv"
   
 #Connect to Admin Center using PnP Online

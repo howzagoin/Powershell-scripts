@@ -82,7 +82,7 @@ function Export-ToExcel {
 function Main {
     Write-Verbose "Entering Main function"
     
-    $AdminUrl = "https://compraraau-admin.sharepoint.com/"
+    $AdminUrl = "https://company-admin.sharepoint.com/"
     
     # Connect to SharePoint tenant
     if (-not (Connect-SharePointTenant -AdminUrl $AdminUrl)) {
@@ -219,7 +219,7 @@ function Export-ToExcel {
 function Main {
     Write-Verbose "Entering Main function"
     
-    $AdminUrl = "https://compraraau-admin.sharepoint.com/"
+    $AdminUrl = "https://company-admin.sharepoint.com/"
     
     # Connect to SharePoint tenant
     if (-not (Connect-SharePointTenant -AdminUrl $AdminUrl)) {

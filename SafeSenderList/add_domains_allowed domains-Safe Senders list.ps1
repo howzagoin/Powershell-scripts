@@ -5,8 +5,8 @@ if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
 Import-Module ImportExcel
 
 # Define credentials and connection details
-$AdminUsername = 'welkin@firstfinancial.com.au'
-$UserToSearch = 'james.wrigley@firstfinancial.com.au'
+$AdminUsername = 'user@domain.com'
+$UserToSearch = 'user@domain.com'
 
 # Connect to Exchange Online
 $SecurePassword = ConvertTo-SecureString $AdminPassword -AsPlainText -Force

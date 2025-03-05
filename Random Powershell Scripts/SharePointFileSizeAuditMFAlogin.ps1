@@ -109,7 +109,7 @@ Function Find-LargeFiles {
 
 # Main Script Execution
 Function Main {
-    $TenantAdminURL = "https://waverleygymnasticscentre-admin.sharepoint.com"
+    $TenantAdminURL = "https://company-admin.sharepoint.com"
     $CSVFilePath = "C:\Temp\LargeFiles-WGC.csv"
 
     # Connect to SharePoint Online with MFA (Web login)

@@ -90,7 +90,8 @@ function Inspect-InboxRules {
 # Main script logic
 $mailboxesWithRedirectRules = Get-Mailbox -ResultSize Unlimited | Where-Object {
     $rules = Get-InboxRule -Mailbox $_.PrimarySmtpAddress
-    $rules | Where-Object { $_.RedirectTo -and $_.RedirectTo -notlike "*@miepol.com" }
+    $rules | Where-Object { $_.RedirectTo -and $_.RedirectTo -notlike "*@safecompanydomain.com" }
+    #SET THE safecompanydomain.com TO CHECK FOR REDIRECT RULES to external domains
 }
 if ($mailboxesWithRedirectRules.Count -eq 0) {
     Write-Host "No mailboxes with redirect rules found."

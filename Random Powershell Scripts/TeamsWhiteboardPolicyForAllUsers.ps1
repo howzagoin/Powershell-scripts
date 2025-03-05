@@ -145,7 +145,7 @@ function Compare-WhiteboardAccess {
 Connect-ExchangeOnline -UserPrincipalName $null -ShowProgress $true
 
 # Prompt for the reference user email (e.g., David)
-$referenceUser = Read-Host "Enter the email address of the reference user (e.g., david.jackson@firstfinancial.com.au)"
+$referenceUser = Read-Host "Enter the email address of the reference user (e.g., user@domain.com)"
 
 # Get and display policy details for the specified user
 Get-PolicyDetails -userPrincipalName $referenceUser
