@@ -5,7 +5,7 @@ Import-Module MicrosoftTeams
 Connect-MicrosoftTeams
 
 # Prompt for user email
-$userPrincipalName = Read-Host -Prompt "Enter the email address of the user (e.g., david.jackson@firstfinancial.com.au)"
+$userPrincipalName = Read-Host -Prompt "Enter the email address of the user (e.g., user@domain.com)"
 
 # Retrieve user details
 $user = Get-CsOnlineUser -Identity $userPrincipalName

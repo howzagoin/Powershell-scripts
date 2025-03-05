@@ -91,7 +91,7 @@ try {
     Connect-ToGraph
 
     # Update Planner settings
-    Update-PlannerDateFormat -TargetUserEmail "lylyna.im@firstfinancial.com.au"
+    Update-PlannerDateFormat -TargetUserEmail "user@domain.com"
 }
 catch {
     Write-Error "Script execution failed: $_"

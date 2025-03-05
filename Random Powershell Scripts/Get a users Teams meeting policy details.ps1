@@ -67,7 +67,7 @@ function Get-PolicyDetails {
 }
 
 # Prompt for user email
-$userPrincipalName = Read-Host "Enter the email address of the user (e.g., david.jackson@firstfinancial.com.au)"
+$userPrincipalName = Read-Host "Enter the email address of the user (e.g., user@domain.com)"
 
 # Get policy details for the specified user
 Get-PolicyDetails -userPrincipalName $userPrincipalName

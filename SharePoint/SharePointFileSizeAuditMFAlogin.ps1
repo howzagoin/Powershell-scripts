@@ -1,5 +1,5 @@
 # ==========================================
-# Author: Tim MacLatchy (Enhanced by Claude)
+# Author: Tim MacLatchy
 # Date: 14-Nov-2024
 # License: MIT License
 # Copyright (c) 2024 Tim MacLatchy
