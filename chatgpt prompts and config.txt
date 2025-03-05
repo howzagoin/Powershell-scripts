@@ -1,35 +1,32 @@
-Here are the features that will be included in all future scripts, formatted for clarity:
+chatgpt remember and always create powershell code that follows all of the below requirements:
 
-Features to Include in Every Future Script:
-Script Comments at the Top:
+    Concise comments with the following fields:
+        Author: Name of the script author (e.g., Tim MacLatchy).
+        Date: Use the date format dd-MM-yyyy.
+        License: Brief MIT license note.
+        Description: A concise description of the script's purpose.
+        Steps: List the main operations performed by the script.
 
-Author: Tim MacLatchy
-Date: Date of script creation or modification
-License: A brief MIT license
-Description: A concise description of the script’s purpose
+    Verify all required modules at the start of the script. Install missing modules automatically if necessary.
 
-Check if any required modules are missing at the start of the script, and install them if necessary.
+    Always use ${} delimiters for variable references within strings to avoid parsing errors.
 
-Use a web-based login with MFA. Once logged in, the session should be reused throughout the script without needing additional authentication. If a login fails, output a clear explanation.
+    Wrap all functions with a Log-And-Execute utility to log their execution. Avoid excessive logging for iterative calls within loops.
 
-Handle errors gracefully, providing clear and detailed error messages, especially when login fails. Ensure the console output is never incomplete due to an error.
+    Never use deviceauthentication or login via console, use Connect-MgGraph with MFA or -UseWebLogin with MFA for authentication without requiring Azure apps or device authentication. Reuse the session throughout the script to avoid multiple login prompts. Provide clear error messages on authentication failure.
 
-Provide detailed verbose logging and output at every step, so you can track each action in the console.
+    Use a single progress bar for batch operations (e.g., processing large datasets) to avoid repetitive messages.
 
-Display progress bars for operations that take time, such as querying large datasets or processing multiple items.
+    Prompt users for the save location using System.Windows.Forms.SaveFileDialog. Save output in Excel format never csv. named with the pattern tenantname_operation_dd-MM-yyyy.xlsx. Include one worksheet unless otherwise specified. Automatically adjust column widths, include headers. Freeze the header row, make headers bold and word wrap, make every column searchable for filtering and sorting. Export-Excel -Path $FilePath -AutoSize -AutoFilter -FreezeTopRow -BoldTopRow -WrapText
 
-If saving output as Excel spreadsheet, prompt for the file location and name using a pop-up.
+    Implement specific error handling for critical cmdlets to ensure the script handles failures gracefully and provides clear feedback.
 
-Automatically adjust column widths when exporting data to Excel to ensure proper formatting and readability.
+    Refactor to reduce redundancy. Use reusable functions for repetitive tasks. never use placeholders like "admin@yourdomain.com" or include example data; prompt users for input if data is required. Wrap all logic into functions, including a Main function, with a clear entry point message.
 
-Output files should be named based on the tenant name, the date, and the operation performed (e.g., tenantname_date_searchtype.xlsx).
+    Ensure compatibility with both PowerShell Core and PowerShell Desktop editions.
 
-Ensure that Excel headers are searchable for easy filtering and sorting.
+    Infer tenant ID automatically where applicable. For SharePoint, extract the tenant directly from an existing site in the admin portal.
 
-Use delimiters (${}) around variable references inside strings to avoid parser errors.
+    Use dd-MM-yyyy format consistently throughout.
 
-Include specific error handling for cmdlets (e.g., Write-Progress, Process-Site) to ensure the script runs without crashing and reports errors clearly.
-
-Always output the updated whole script, not just the updated part.
-
-Date format order should be date, month, year
+    After chatgpt suggests changes to a script, chatgpt must Always output the updated whole script, not just the updated part.

@@ -54,6 +54,16 @@ function Inspect-InboxRules {
         $index++
     }
 
+    return $rulesList
+}
+
+# Function to handle global action for all mailboxes
+function HandleGlobalAction {
+    param (
+        [array]$rulesList,
+        [string]$mailbox
+    )
+
     # Ask user for action
     $action = Read-Host "Do you want to (D)elete all rules, (S)elect a specific rule to delete, or (L)eave them unchanged? (Enter D, S, or L)"
     switch ($action.ToUpper()) {
@@ -66,7 +76,7 @@ function Inspect-InboxRules {
                     Write-Host "Failed to delete rule: $($rule.RuleIdentity)"
                 }
             }
-            Write-Host "All inbox rules have been deleted."
+            Write-Host "All inbox rules have been deleted for mailbox: $mailbox."
         }
         'S' {
             $ruleNumber = Read-Host "Enter the number of the rule you want to delete:"
@@ -83,7 +93,7 @@ function Inspect-InboxRules {
             }
         }
         'L' {
-            Write-Host "No changes made to rules."
+            Write-Host "No changes made to rules for mailbox: $mailbox."
         }
         default {
             Write-Host "Invalid option. Exiting."
@@ -94,7 +104,7 @@ function Inspect-InboxRules {
 
 # Main script logic
 do {
-    $choice = Read-Host "Do you want to inspect (A)ll mailboxes, (S)hared mailboxes only, (O)ne specific mailbox, or (E)xit? (Enter A, S, O, or E)"
+    $choice = Read-Host "Do you want to inspect (A)ll mailboxes, (S)hared mailboxes only, (O)ne specific mailbox, (E)rrors only, or (X)exit? (Enter A, S, O, E, or X)"
     switch ($choice.ToUpper()) {
         'A' {
             $mailboxes = Get-Mailbox -ResultSize Unlimited
@@ -103,9 +113,10 @@ do {
             } else {
                 Write-Host "Listing all mailboxes..."
                 foreach ($mailbox in $mailboxes) {
-                    Write-Host "--------------------------------------"
-                    Write-Host "Mailbox: $($mailbox.PrimarySmtpAddress)"
-                    Inspect-InboxRules -mailbox $mailbox.PrimarySmtpAddress
+                    $rulesList = Inspect-InboxRules -mailbox $mailbox.PrimarySmtpAddress
+                    if ($rulesList) {
+                        HandleGlobalAction -rulesList $rulesList -mailbox $mailbox.PrimarySmtpAddress
+                    }
                 }
 
                 # Ask user if they want to save results to Excel
@@ -147,9 +158,10 @@ do {
             } else {
                 Write-Host "Listing shared mailboxes..."
                 foreach ($mailbox in $sharedMailboxes) {
-                    Write-Host "--------------------------------------"
-                    Write-Host "Mailbox: $($mailbox.PrimarySmtpAddress)"
-                    Inspect-InboxRules -mailbox $mailbox.PrimarySmtpAddress
+                    $rulesList = Inspect-InboxRules -mailbox $mailbox.PrimarySmtpAddress
+                    if ($rulesList) {
+                        HandleGlobalAction -rulesList $rulesList -mailbox $mailbox.PrimarySmtpAddress
+                    }
                 }
 
                 # Ask user if they want to save results to Excel
@@ -185,16 +197,32 @@ do {
         }
         'O' {
             $specificMailbox = Read-Host "Enter the mailbox to inspect (e.g., sharedmailbox@example.com)"
-            Inspect-InboxRules -mailbox $specificMailbox
+            $rulesList = Inspect-InboxRules -mailbox $specificMailbox
+            if ($rulesList) {
+                HandleGlobalAction -rulesList $rulesList -mailbox $specificMailbox
+            }
         }
         'E' {
+            $mailboxesWithErrors = Get-Mailbox -ResultSize Unlimited
+            foreach ($mailbox in $mailboxesWithErrors) {
+                $rules = Get-InboxRule -Mailbox $mailbox.PrimarySmtpAddress
+                foreach ($rule in $rules) {
+                    if ($rule.HasErrors) {
+                        Write-Host "Error found in rule for mailbox: $($mailbox.PrimarySmtpAddress)"
+                        Write-Host "Rule Name: $($rule.Name)"
+                    }
+                }
+            }
+        }
+        'X' {
             Write-Host "Exiting script."
+            break
         }
         default {
-            Write-Host "Invalid option. Please select again."
+            Write-Host "Invalid choice. Please select a valid option."
         }
     }
-} while ($choice.ToUpper() -ne 'E')
+} while ($true)
 
-# Disconnect from the Exchange Online session
+# Disconnect from Exchange Online
 Disconnect-ExchangeOnline -Confirm:$false
