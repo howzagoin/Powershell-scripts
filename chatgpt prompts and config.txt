@@ -1,3 +1,5 @@
+###    Never use deviceauthentication or login via console, use Connect-MgGraph with MFA or -UseWebLogin with MFA for authentication without requiring Azure apps or device authentication. Reuse the session throughout the script to avoid multiple login prompts. Provide clear error messages on authentication failure.###
+
 chatgpt remember and always create powershell code that follows all of the below requirements:
 
     Concise comments with the following fields:
@@ -12,8 +14,6 @@ chatgpt remember and always create powershell code that follows all of the below
     Always use ${} delimiters for variable references within strings to avoid parsing errors.
 
     Wrap all functions with a Log-And-Execute utility to log their execution. Avoid excessive logging for iterative calls within loops.
-
-    Never use deviceauthentication or login via console, use Connect-MgGraph with MFA or -UseWebLogin with MFA for authentication without requiring Azure apps or device authentication. Reuse the session throughout the script to avoid multiple login prompts. Provide clear error messages on authentication failure.
 
     Use a single progress bar for batch operations (e.g., processing large datasets) to avoid repetitive messages.
 
