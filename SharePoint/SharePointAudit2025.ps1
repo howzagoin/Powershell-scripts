@@ -1,456 +1,489 @@
-#
 <#
 .SYNOPSIS
-  Audits a SharePoint site via Microsoft Graph (app-only auth)
+  Generates a focused SharePoint storage and access report with Excel charts
 
 .DESCRIPTION
-  Fixed version with better error handling and troubleshooting for drive access issues.
+  Creates an Excel report showing:
+  - Top 20 largest files
+  - Top 10 largest folders
+  - Storage breakdown pie chart
+  - User access summary showing only parent folder permissions
 #>
 
+# Set strict error handling
+$ErrorActionPreference = "Stop"
+$WarningPreference = "SilentlyContinue"
+
 #--- Configuration ---
-$clientId     = ''
-$tenantId     = ''
-$clientSecret = ''
-$siteUrl      = ''
+$clientId     = '278b9af9-888d-4344-93bb-769bdd739249'
+$tenantId     = 'ca0711e2-e703-4f4e-9099-17d97863211c'
+$siteUrl      = 'https://fbaint.sharepoint.com/sites/Marketing'
+$certificateThumbprint = 'B0AF0EF7659EA83D3140844F4BF89CCBB9413DBA'
 
-#--- Modules ---
-function Install-ModuleIfMissing {
-    param([string]$Name)
-    if (-not (Get-Module -ListAvailable -Name $Name)) {
-        Install-Module -Name $Name -Scope CurrentUser -Force -ErrorAction Stop
-    }
-    Import-Module -Name $Name -Force -ErrorAction Stop
-}
-Install-ModuleIfMissing 'Microsoft.Graph'
-Install-ModuleIfMissing 'ImportExcel'
+#--- Required Modules ---
+$requiredModules = @(
+    'Microsoft.Graph.Authentication',
+    'Microsoft.Graph.Sites', 
+    'Microsoft.Graph.Files',
+    'Microsoft.Graph.Users',
+    'ImportExcel'
+)
 
-#--- Improved Error Handling ---
-function Invoke-LoggedCommand {
-    param([string]$Description, [scriptblock]$Action)
-    Write-Host "`n[+] $Description" -ForegroundColor Cyan
-    try {
-        $result = & $Action
-        Write-Host "[√] Success" -ForegroundColor Green
-        return $result
-    } catch {
-        Write-Host "[X] Error during '$Description'" -ForegroundColor Red
-        Write-Host "Error details: $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host "StackTrace: $($_.ScriptStackTrace)" -ForegroundColor DarkYellow
-        throw
+# Install and import required modules
+foreach ($module in $requiredModules) {
+    if (-not (Get-Module -ListAvailable -Name $module)) {
+        Write-Host "Installing $module..." -ForegroundColor Yellow
+        Install-Module -Name $module -Force -AllowClobber -SkipPublisherCheck -WarningAction SilentlyContinue
     }
+    Import-Module -Name $module -Force -WarningAction SilentlyContinue
 }
 
 #--- Authentication ---
-function Connect-Graph {
-    Invoke-LoggedCommand 'Authenticating to Microsoft Graph' {
-        Disconnect-MgGraph -ErrorAction SilentlyContinue
-        Remove-Item "$env:USERPROFILE\.mgcontext" -ErrorAction SilentlyContinue
-        
-        # Connect with retry logic
-        $retryCount = 0
-        $maxRetries = 3
-        $connected = $false
-        
-        while (-not $connected -and $retryCount -lt $maxRetries) {
-            try {
-                Connect-MgGraph -ClientId $clientId -TenantId $tenantId -ClientSecret $clientSecret `
-                    -Scopes @("https://graph.microsoft.com/.default") -ErrorAction Stop
-                
-                if ((Get-MgContext).AuthType -ne 'AppOnly') {
-                    throw "Expected AppOnly auth, got '$((Get-MgContext).AuthType)'"
+function Connect-ToGraph {
+    Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
+    
+    # Clear existing connections
+    Disconnect-MgGraph -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
+    
+    # Get certificate
+    $cert = Get-ChildItem -Path "Cert:\CurrentUser\My\$certificateThumbprint" -ErrorAction Stop
+    
+    # Connect with app-only authentication
+    Connect-MgGraph -ClientId $clientId -TenantId $tenantId -Certificate $cert -NoWelcome -WarningAction SilentlyContinue
+    
+    # Verify app-only authentication
+    $context = Get-MgContext
+    if ($context.AuthType -ne 'AppOnly') {
+        throw "App-only authentication required. Current: $($context.AuthType)"
+    }
+    
+    Write-Host "Successfully connected with app-only authentication" -ForegroundColor Green
+}
+
+#--- Get Site Information ---
+function Get-SiteInfo {
+    param([string]$SiteUrl)
+    
+    Write-Host "Getting site information..." -ForegroundColor Cyan
+    
+    # Extract site ID from URL
+    $uri = [Uri]$SiteUrl
+    $sitePath = $uri.AbsolutePath
+    $siteId = "$($uri.Host):$sitePath"
+    
+    $site = Get-MgSite -SiteId $siteId
+    Write-Host "Found site: $($site.DisplayName)" -ForegroundColor Green
+    
+    return $site
+}
+
+#--- Get Total Item Count (for progress bar) ---
+function Get-TotalItemCount {
+    param(
+        [string]$DriveId,
+        [string]$Path = "root"
+    )
+    
+    $count = 0
+    try {
+        $children = Get-MgDriveItemChild -DriveId $DriveId -DriveItemId $Path -All -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
+        if ($children) {
+            $count += $children.Count
+            foreach ($child in $children) {
+                if ($child.Folder) {
+                    $count += Get-TotalItemCount -DriveId $DriveId -Path $child.Id
                 }
-                $connected = $true
-            } catch {
-                $retryCount++
-                if ($retryCount -ge $maxRetries) {
-                    throw
-                }
-                Start-Sleep -Seconds (5 * $retryCount)
             }
         }
     }
+    catch {
+        # Silently handle errors
+    }
+    return $count
 }
 
-#--- Site Resolution ---
-function Get-FilesFromDrive {
+#--- Get Drive Items Recursively ---
+function Get-DriveItems {
     param(
         [string]$DriveId,
-        [string]$SiteId
+        [string]$Path,
+        [int]$Depth = 0,
+        [ref]$GlobalItemIndex,
+        [int]$TotalItems = 1
     )
-    
-    Invoke-LoggedCommand "Processing drive $DriveId" {
-        # Initialize variables
-        $files = @()
-        $processedItems = 0
-        $foldersFound = 0
-        $filesFound = 0
-        $excludedFiles = 0
-
-        # Use stack for DFS traversal
-        $stack = New-Object System.Collections.Stack
-        $stack.Push(@{Id = "root"; Depth = 1})
-
-        # Set maximum items to process
-        $maxItems = 5000
-        $maxDepth = 20
-
-        while ($stack.Count -gt 0 -and $processedItems -lt $maxItems) {
-            $current = $stack.Pop()
-            $currentItemId = $current.Id
-            $currentDepth = $current.Depth
-
-            Write-Host "Processing item $currentItemId (Depth: $currentDepth)" -ForegroundColor DarkGray
-
-            try {
-                # Get children with retry logic
-                $children = $null
-                $retryCount = 0
-                $maxRetries = 3
+    $items = @()
+    try {
+        $children = Get-MgDriveItemChild -DriveId $DriveId -DriveItemId $Path -All -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
+        
+        if ($children -and $children.Count -gt 0) {
+            foreach ($child in $children) {
+                if ($null -eq $child -or -not $child.Id) { continue }
                 
-                while ($retryCount -lt $maxRetries) {
+                $items += $child
+                $GlobalItemIndex.Value++
+                
+                # Update progress bar
+                $percent = if ($TotalItems -gt 0) { [Math]::Min(100, [int](($GlobalItemIndex.Value/$TotalItems)*100)) } else { 100 }
+                $progressBar = ('█' * ($percent / 2)) + ('░' * (50 - ($percent / 2)))
+                Write-Progress -Activity "Scanning SharePoint Site Content" -Status "[$progressBar] $percent% - Processing: $($child.Name)" -PercentComplete $percent -Id 1
+                
+                # Recursively get folder contents
+                if ($child.Folder -and $Depth -lt 10) {
                     try {
-                        $children = Get-MgDriveItemChild -DriveId $DriveId -DriveItemId $currentItemId -All -ErrorAction Stop
-                        break
+                        $items += Get-DriveItems -DriveId $DriveId -Path $child.Id -Depth ($Depth + 1) -GlobalItemIndex $GlobalItemIndex -TotalItems $TotalItems
                     } catch {
-                        $retryCount++
-                        if ($retryCount -ge $maxRetries) {
-                            throw
-                        }
-                        Start-Sleep -Seconds (2 * $retryCount)
+                        # Silently skip folders with access issues
                     }
                 }
-
-                # Process children in reverse order to maintain DFS order
-                $reverseChildren = $children | Sort-Object { $_.Folder -ne $null } -Descending
-                
-                foreach ($item in $reverseChildren) {
-                    $processedItems++
-                    
-                    # Progress reporting
-                    if ($processedItems % 100 -eq 0) {
-                        Write-Host "Processed $processedItems items..." -ForegroundColor Gray
-                    }
-
-                    # Debug output for first 20 items
-                    if ($processedItems -le 20) {
-                        $type = if ($item.Folder) { "Folder" } else { "File" }
-                        Write-Host "  Found: $($item.Name) | Type: $type | Path: $($item.ParentReference.Path)" -ForegroundColor DarkCyan
-                    }
-
-                    if ($item.Folder) {
-                        $foldersFound++
-                        # Push folders to stack (with increased depth)
-                        if ($currentDepth -lt $maxDepth) {
-                            $stack.Push(@{Id = $item.Id; Depth = $currentDepth + 1})
-                            if ($processedItems -le 20) {
-                                Write-Host "  Added folder to stack: $($item.Name)" -ForegroundColor DarkGreen
-                            }
-                        }
-                    }
-                    elseif ($item.File) {
-                        $filesFound++
-                        $ext = ([IO.Path]::GetExtension($item.Name)).ToLower()
-                        
-                        # Very permissive filtering - only exclude true system files
-                        if ($ext -notin @('.aspx','.master','.webpart')) {
-                            $fileObj = [PSCustomObject]@{
-                                Name    = $item.Name
-                                Path    = $item.ParentReference.Path
-                                Size    = $item.Size
-                                DriveId = $DriveId
-                                ItemId  = $item.Id
-                                Extension = $ext
-                                CreatedDateTime = $item.CreatedDateTime
-                                LastModifiedDateTime = $item.LastModifiedDateTime
-                                WebUrl  = $item.WebUrl
-                            }
-                            $files += $fileObj
-                            if ($processedItems -le 20) {
-                                Write-Host "  Added file: $($item.Name) ($ext)" -ForegroundColor Green
-                            }
-                        } else {
-                            $excludedFiles++
-                            if ($processedItems -le 20) {
-                                Write-Host "  Excluded system file: $($item.Name)" -ForegroundColor Yellow
-                            }
-                        }
-                    }
-                }
-            } catch {
-                Write-Host "Warning: Could not process item $currentItemId - $($_.Exception.Message)" -ForegroundColor Yellow
-                continue
             }
-        }
-
-        Write-Host "`nDrive Processing Summary:" -ForegroundColor Cyan
-        Write-Host "  Total items processed: $processedItems" -ForegroundColor White
-        Write-Host "  Folders found: $foldersFound" -ForegroundColor White
-        Write-Host "  Files found: $filesFound" -ForegroundColor White
-        Write-Host "  Files excluded: $excludedFiles" -ForegroundColor White
-        Write-Host "  User files included: $($files.Count)" -ForegroundColor Green
-
-        # Debug: Show sample of files if found
-        if ($files.Count -gt 0) {
-            Write-Host "`nSample files found:" -ForegroundColor Cyan
-            $files | Select-Object -First 5 | Format-Table Name, Size, Extension, WebUrl
-        } else {
-            # If no files found, try a direct query to root
-            Write-Host "`nNo files found in traversal. Trying direct root query..." -ForegroundColor Yellow
-            try {
-                $rootItems = Get-MgDriveItemChild -DriveId $DriveId -DriveItemId "root" -All -ErrorAction Stop
-                $rootFiles = $rootItems | Where-Object { $_.File }
-                Write-Host "Found $($rootFiles.Count) files in root directory" -ForegroundColor Cyan
-                $rootFiles | Select-Object -First 5 | Format-Table Name, Size, @{Name="Type";Expression={if($_.File){"File"}else{"Folder"}}}
-            } catch {
-                Write-Host "Direct root query failed: $_" -ForegroundColor Red
-            }
-        }
-
-        return $files
-    }
-}
-
-#--- Enhanced File Retrieval ---
-function Get-FilesFromDrive {
-    param(
-        [string]$DriveId,
-        [string]$SiteId
-    )
-    
-    Invoke-LoggedCommand "Processing drive $DriveId" {
-        $stack = @('root')
-        $files = @()
-        $processedItems = 0
-        $foldersFound = 0
-        $filesFound = 0
-        $excludedFiles = 0
-        $maxDepth = 20 # Prevent infinite recursion
-        $currentDepth = 0
-
-        while ($stack.Count -gt 0 -and $currentDepth -lt $maxDepth) {
-            $currentDepth++
-            $current = $stack[0]
-            $stack = $stack[1..($stack.Count - 1)]
-            
-            Write-Host "Processing item $current (Depth: $currentDepth)" -ForegroundColor DarkGray
-            
-            try {
-                $children = Get-MgDriveItemChild -DriveId $DriveId -DriveItemId $current -All -ErrorAction Stop
-                
-                foreach ($item in $children) {
-                    $processedItems++
-                    if ($processedItems % 100 -eq 0) {
-                        Write-Host "Processed $processedItems items..." -ForegroundColor Gray
-                    }
-                    
-                    # Debug: Show what we're finding
-                    if ($processedItems -le 20) {
-                        Write-Host "  Found: $($item.Name) | Type: $(if($item.Folder){'Folder'}else{'File'}) | Path: $($item.ParentReference.Path)" -ForegroundColor DarkCyan
-                    }
-                    
-                    $pathLower = if ($item.ParentReference.Path) { $item.ParentReference.Path.ToLower() } else { "" }
-                    
-                    if ($item.Folder) {
-                        $foldersFound++
-                        # More permissive folder filtering - only exclude system folders
-                        if ($pathLower -notmatch '/forms$|/siteassets$|/site pages$|/_catalogs|/_layouts') {
-                            $stack += $item.Id
-                            if ($processedItems -le 20) {
-                                Write-Host "  Added folder to queue: $($item.Name)" -ForegroundColor DarkGreen
-                            }
-                        } else {
-                            if ($processedItems -le 20) {
-                                Write-Host "  Excluded system folder: $($item.Name)" -ForegroundColor DarkYellow
-                            }
-                        }
-                    }
-                    elseif ($item.File) {
-                        $filesFound++
-                        $ext = ([IO.Path]::GetExtension($item.Name)).ToLower()
-                        
-                        # More permissive file filtering - include more file types
-                        if ($ext -notin @('.aspx','.js','.css','.master','.html','.xml','.webpart')) {
-                            $files += [PSCustomObject]@{
-                                Name    = $item.Name
-                                Path    = $item.ParentReference.Path
-                                Size    = $item.Size
-                                DriveId = $DriveId
-                                ItemId  = $item.Id
-                                Extension = $ext
-                                CreatedDateTime = $item.CreatedDateTime
-                                LastModifiedDateTime = $item.LastModifiedDateTime
-                            }
-                            if ($processedItems -le 20) {
-                                Write-Host "  Added file: $($item.Name) ($ext)" -ForegroundColor Green
-                            }
-                        } else {
-                            $excludedFiles++
-                            if ($processedItems -le 20) {
-                                Write-Host "  Excluded system file: $($item.Name) ($ext)" -ForegroundColor Yellow
-                            }
-                        }
-                    }
-                }
-            } catch {
-                Write-Host "Warning: Could not process item $current - $_" -ForegroundColor Yellow
-                continue
-            }
-        }
-        
-        Write-Host "`nDrive Processing Summary:" -ForegroundColor Cyan
-        Write-Host "  Total items processed: $processedItems" -ForegroundColor White
-        Write-Host "  Folders found: $foldersFound" -ForegroundColor White
-        Write-Host "  Files found: $filesFound" -ForegroundColor White
-        Write-Host "  Files excluded: $excludedFiles" -ForegroundColor White
-        Write-Host "  User files included: $($files.Count)" -ForegroundColor Green
-        
-        return $files
-    }
-}
-
-#--- Main File Collection ---
-function Get-AllFiles {
-    param($Site)  # Removed specific type constraint to handle array/object flexibility
-    
-    Invoke-LoggedCommand 'Gathering all user-uploaded files' {
-        try {
-            $drives = Get-MgSiteDrive -SiteId $Site.Id -ErrorAction Stop
-            Write-Host "Found $($drives.Count) drives in site" -ForegroundColor Cyan
-            
-            $results = @()
-            foreach ($drive in $drives) {
-                Write-Host "Processing drive: $($drive.Name) (ID: $($drive.Id))" -ForegroundColor Cyan
-                try {
-                    $driveFiles = Get-FilesFromDrive -DriveId $drive.Id -SiteId $Site.Id
-                    $results += $driveFiles
-                } catch {
-                    Write-Host "Skipping drive $($drive.Id) due to error: $_" -ForegroundColor Yellow
-                    continue
-                }
-            }
-            
-            return $results
-        } catch {
-            Write-Host "Error accessing drives. Ensure the app has 'Files.Read.All' permission." -ForegroundColor Red
-            throw
         }
     }
+    catch {
+        # Silently handle errors
+    }
+    return $items
 }
 
-#--- SharePoint Groups and Users ---
-function Get-SharePointGroupsAndUsers {
+#--- Collect File Data ---
+function Get-FileData {
     param($Site)
     
-    Invoke-LoggedCommand 'Gathering SharePoint groups and users' {
+    Write-Host "Analyzing site structure..." -ForegroundColor Cyan
+    
+    $allFiles = @()
+    $folderSizes = @{}
+    
+    # Get all drives for the site
+    $drives = Get-MgSiteDrive -SiteId $Site.Id -WarningAction SilentlyContinue
+    
+    # Calculate total items for progress bar
+    Write-Host "Calculating total items for progress tracking..." -ForegroundColor Cyan
+    $totalItems = 0
+    foreach ($drive in $drives) {
+        $totalItems += Get-TotalItemCount -DriveId $drive.Id
+    }
+    
+    Write-Host "Found approximately $totalItems items to process" -ForegroundColor Green
+    
+    $globalItemIndex = 0
+    $globalItemIndexRef = [ref]$globalItemIndex
+    $items = @()
+    
+    # Process each drive
+    foreach ($drive in $drives) {
         try {
-            # Get site permissions
-            $sitePermissions = Get-MgSitePermission -SiteId $Site.Id -ErrorAction SilentlyContinue
-            Write-Host "Found $($sitePermissions.Count) site permissions" -ForegroundColor Cyan
+            $children = Get-MgDriveItemChild -DriveId $drive.Id -DriveItemId "root" -All -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
             
-            # Display permissions if found
-            if ($sitePermissions.Count -gt 0) {
-                Write-Host "Site Permissions:" -ForegroundColor Cyan
-                foreach ($perm in $sitePermissions | Select-Object -First 5) {
-                    Write-Host "  ID: $($perm.Id) | Roles: $($perm.Roles -join ', ')" -ForegroundColor White
+            foreach ($child in $children) {
+                if ($null -eq $child) { continue }
+                
+                $items += $child
+                $globalItemIndexRef.Value++
+                
+                # Update progress bar
+                $percent = if ($totalItems -gt 0) { [Math]::Min(100, [int](($globalItemIndexRef.Value/$totalItems)*100)) } else { 100 }
+                $progressBar = ('█' * ($percent / 2)) + ('░' * (50 - ($percent / 2)))
+                Write-Progress -Activity "Scanning SharePoint Site Content" -Status "[$progressBar] $percent% - Processing: $($child.Name)" -PercentComplete $percent -Id 1
+                
+                if ($child.Folder) {
+                    $items += Get-DriveItems -DriveId $drive.Id -Path $child.Id -Depth 1 -GlobalItemIndex $globalItemIndexRef -TotalItems $totalItems
                 }
             }
-            
-            return $sitePermissions
-        } catch {
-            Write-Host "Warning: Could not retrieve site permissions - $_" -ForegroundColor Yellow
-            return @()
         }
+        catch {
+            # Silently handle drive access errors
+        }
+    }
+    
+    Write-Progress -Activity "Scanning SharePoint Site Content" -Completed -Id 1
+    Write-Host "Processing collected items..." -ForegroundColor Cyan
+    
+    foreach ($item in $items) {
+        if ($item.File) {
+            # Filter out system files
+            $isSystem = $false
+            if ($item.Name -match '^~' -or $item.Name -match '^\.' -or $item.Name -match '^Forms$' -or 
+                $item.Name -match '^_vti_' -or $item.Name -match '^appdata' -or $item.Name -match '^.DS_Store$' -or 
+                $item.Name -match '^Thumbs.db$') {
+                $isSystem = $true
+            }
+            if ($item.File.MimeType -eq 'application/vnd.microsoft.sharepoint.system' -or 
+                $item.File.MimeType -eq 'application/vnd.ms-sharepoint.folder') {
+                $isSystem = $true
+            }
+            if ($item.WebUrl -match '/_layouts/' -or $item.WebUrl -match '/_catalogs/' -or 
+                $item.WebUrl -match '/_vti_bin/') {
+                $isSystem = $true
+            }
+            if ($isSystem) { continue }
+            
+            $allFiles += [PSCustomObject]@{
+                Name = $item.Name
+                Size = [long]$item.Size
+                SizeGB = [math]::Round($item.Size / 1GB, 3)
+                SizeMB = [math]::Round($item.Size / 1MB, 2)
+                Path = $item.ParentReference.Path
+                Drive = $item.ParentReference.DriveId
+                Extension = [System.IO.Path]::GetExtension($item.Name).ToLower()
+            }
+            
+            # Track folder sizes
+            $folderPath = $item.ParentReference.Path
+            if (-not $folderSizes.ContainsKey($folderPath)) {
+                $folderSizes[$folderPath] = 0
+            }
+            $folderSizes[$folderPath] += $item.Size
+        }
+    }
+    
+    Write-Host "Site analysis complete - Found $($allFiles.Count) files across $($drives.Count) drives" -ForegroundColor Green
+    
+    return @{
+        Files = $allFiles
+        FolderSizes = $folderSizes
+        TotalFiles = $allFiles.Count
+        TotalSizeGB = [math]::Round(($allFiles | Measure-Object -Property Size -Sum).Sum / 1GB, 2)
     }
 }
 
-#--- Excel Export ---
-function Export-ExcelReport {
-    param($Data)
+#--- Get Parent Folder Access Information ---
+function Get-ParentFolderAccess {
+    param($Site)
     
-    Invoke-LoggedCommand 'Exporting to Excel' {
-        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-        $filename = "SharePoint_Audit_$timestamp.xlsx"
+    Write-Host "Retrieving parent folder access information..." -ForegroundColor Cyan
+    
+    $folderAccess = @()
+    $processedFolders = @{}
+    
+    try {
+        # Get all drives for the site
+        $drives = Get-MgSiteDrive -SiteId $Site.Id -WarningAction SilentlyContinue
         
-        try {
-            $Data | Export-Excel -Path $filename -AutoSize -TableStyle Medium2 -WorksheetName "Files"
-            Write-Host "Report exported to: $filename" -ForegroundColor Green
-        } catch {
-            Write-Host "Excel export failed. Exporting to CSV instead..." -ForegroundColor Yellow
-            $csvFile = "SharePoint_Audit_$timestamp.csv"
-            $Data | Export-Csv -Path $csvFile -NoTypeInformation
-            Write-Host "Report exported to: $csvFile" -ForegroundColor Green
+        foreach ($drive in $drives) {
+            try {
+                # Get root folders only (first level)
+                $rootFolders = Get-MgDriveItemChild -DriveId $drive.Id -DriveItemId "root" -All -ErrorAction Stop | 
+                              Where-Object { $_.Folder }
+                
+                foreach ($folder in $rootFolders) {
+                    if ($processedFolders.ContainsKey($folder.Id)) { continue }
+                    $processedFolders[$folder.Id] = $true
+                    
+                    try {
+                        $permissions = Get-MgDriveItemPermission -DriveId $drive.Id -DriveItemId $folder.Id -All -ErrorAction Stop
+                        
+                        foreach ($perm in $permissions) {
+                            $roles = ($perm.Roles | Where-Object { $_ }) -join ', '
+                            
+                            if ($perm.GrantedToIdentitiesV2) {
+                                foreach ($identity in $perm.GrantedToIdentitiesV2) {
+                                    if ($identity.User.DisplayName) {
+                                        $folderAccess += [PSCustomObject]@{
+                                            FolderName = $folder.Name
+                                            FolderPath = $folder.ParentReference.Path + '/' + $folder.Name
+                                            UserName = $identity.User.DisplayName
+                                            UserEmail = $identity.User.Email
+                                            PermissionLevel = $roles
+                                            AccessType = if ($roles -match 'owner|write') { 'Full/Edit' } 
+                                                        elseif ($roles -match 'read') { 'Read Only' } 
+                                                        else { 'Other' }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if ($perm.GrantedTo -and $perm.GrantedTo.User.DisplayName) {
+                                $folderAccess += [PSCustomObject]@{
+                                    FolderName = $folder.Name
+                                    FolderPath = $folder.ParentReference.Path + '/' + $folder.Name
+                                    UserName = $perm.GrantedTo.User.DisplayName
+                                    UserEmail = $perm.GrantedTo.User.Email
+                                    PermissionLevel = $roles
+                                    AccessType = if ($roles -match 'owner|write') { 'Full/Edit' } 
+                                                elseif ($roles -match 'read') { 'Read Only' } 
+                                                else { 'Other' }
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        Write-Host "Warning: Could not retrieve permissions for folder $($folder.Name) - $_" -ForegroundColor Yellow
+                    }
+                }
+            }
+            catch {
+                Write-Host "Warning: Could not access drive $($drive.Id) - $_" -ForegroundColor Yellow
+            }
         }
+        
+        # Remove duplicates (same user with same access to same folder)
+        $folderAccess = $folderAccess | Sort-Object FolderName, UserName, PermissionLevel -Unique
+        
+        Write-Host "Found access data for $($folderAccess.Count) parent folder permissions" -ForegroundColor Green
+        
     }
+    catch {
+        Write-Host "Error retrieving folder access data: $_" -ForegroundColor Red
+        $folderAccess = @([PSCustomObject]@{
+            FolderName = "Permission Error"
+            FolderPath = "Check permissions"
+            UserName = "Unable to retrieve data"
+            UserEmail = "Requires additional permissions"
+            PermissionLevel = "N/A"
+            AccessType = "Error"
+        })
+    }
+    
+    return $folderAccess
+}
+
+#--- Create Excel Report ---
+function New-ExcelReport {
+    param(
+        $FileData,
+        $FolderAccess,
+        $Site,
+        $FileName
+    )
+    
+    Write-Host "Creating Excel report: $FileName" -ForegroundColor Cyan
+    
+    # Prepare data for different sheets
+    $top20Files = $FileData.Files | Sort-Object Size -Descending | Select-Object -First 20 |
+        Select-Object Name, SizeMB, Path, Drive, Extension
+    
+    $top10Folders = $FileData.FolderSizes.GetEnumerator() | 
+        Sort-Object Value -Descending | Select-Object -First 10 |
+        ForEach-Object { 
+            [PSCustomObject]@{
+                FolderPath = $_.Key
+                SizeGB = [math]::Round($_.Value / 1GB, 3)
+                SizeMB = [math]::Round($_.Value / 1MB, 2)
+            }
+        }
+    
+    # Storage breakdown by location for pie chart
+    $storageBreakdown = $FileData.FolderSizes.GetEnumerator() | 
+        Sort-Object Value -Descending | Select-Object -First 15 |
+        ForEach-Object {
+            $folderName = if ($_.Key -match '/([^/]+)/?$') { $matches[1] } else { "Root" }
+            [PSCustomObject]@{
+                Location = $folderName
+                Path = $_.Key
+                SizeGB = [math]::Round($_.Value / 1GB, 3)
+                SizeMB = [math]::Round($_.Value / 1MB, 2)
+                Percentage = [math]::Round(($_.Value / ($FileData.Files | Measure-Object Size -Sum).Sum) * 100, 1)
+            }
+        }
+    
+    # Parent folder access summary
+    $accessSummary = $FolderAccess | Group-Object PermissionLevel | 
+        ForEach-Object {
+            [PSCustomObject]@{
+                PermissionLevel = $_.Name
+                UserCount = $_.Count
+                Users = ($_.Group.UserName | Sort-Object -Unique) -join '; '
+            }
+        }
+    
+    # Site summary
+    $siteSummary = @([PSCustomObject]@{
+        SiteName = $Site.DisplayName
+        SiteUrl = $Site.WebUrl
+        TotalFiles = $FileData.TotalFiles
+        TotalSizeGB = $FileData.TotalSizeGB
+        TotalFolders = $FileData.FolderSizes.Count
+        UniquePermissionLevels = ($FolderAccess.PermissionLevel | Sort-Object -Unique).Count
+        ReportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    })
+    
+    # Create Excel file with multiple worksheets
+    $excel = $siteSummary | Export-Excel -Path $FileName -WorksheetName "Summary" -AutoSize -TableStyle Medium2 -PassThru
+    $top20Files | Export-Excel -ExcelPackage $excel -WorksheetName "Top 20 Files" -AutoSize -TableStyle Medium6
+    $top10Folders | Export-Excel -ExcelPackage $excel -WorksheetName "Top 10 Folders" -AutoSize -TableStyle Medium3
+    $storageBreakdown | Export-Excel -ExcelPackage $excel -WorksheetName "Storage Breakdown" -AutoSize -TableStyle Medium4
+    $FolderAccess | Export-Excel -ExcelPackage $excel -WorksheetName "Folder Access" -AutoSize -TableStyle Medium5
+    $accessSummary | Export-Excel -ExcelPackage $excel -WorksheetName "Access Summary" -AutoSize -TableStyle Medium1
+    
+    # Add charts to the storage breakdown worksheet
+    $ws = $excel.Workbook.Worksheets["Storage Breakdown"]
+    
+    # Create pie chart for storage distribution by location
+    $chart = $ws.Drawings.AddChart("StorageChart", [OfficeOpenXml.Drawing.Chart.eChartType]::Pie)
+    $chart.Title.Text = "Storage Usage by Location"
+    $chart.SetPosition(1, 0, 7, 0)
+    $chart.SetSize(500, 400)
+    
+    $series = $chart.Series.Add($ws.Cells["C2:C$($storageBreakdown.Count + 1)"], $ws.Cells["A2:A$($storageBreakdown.Count + 1)"])
+    $series.Header = "Size (GB)"
+    
+    Close-ExcelPackage $excel
+    
+    Write-Host "Excel report created successfully!" -ForegroundColor Green
+    Write-Host "`nReport Contents:" -ForegroundColor Cyan
+    Write-Host "- Summary: Overall site statistics" -ForegroundColor White
+    Write-Host "- Top 20 Files: Largest files by size" -ForegroundColor White  
+    Write-Host "- Top 10 Folders: Largest folders by size" -ForegroundColor White
+    Write-Host "- Storage Breakdown: Space usage by location with pie chart" -ForegroundColor White
+    Write-Host "- Folder Access: Parent folder permissions" -ForegroundColor White
+    Write-Host "- Access Summary: Users grouped by permission level" -ForegroundColor White
 }
 
 #--- Main Execution ---
 function Main {
     try {
-        Connect-Graph
-        $site = Get-TargetSite -Url $siteUrl
+        Write-Host "SharePoint Storage & Access Report Generator" -ForegroundColor Green
+        Write-Host "=============================================" -ForegroundColor Green
         
-        # Verify permissions
-        Write-Host "`n[!] Verifying required permissions..." -ForegroundColor Cyan
-        try {
-            $test = Get-MgSiteDrive -SiteId $site.Id -Top 1 -ErrorAction Stop
-            Write-Host "[√] Drive access verified" -ForegroundColor Green
-        } catch {
-            Write-Host "[X] Drive access failed. Required permissions:" -ForegroundColor Red
-            Write-Host " - Sites.Read.All or Sites.ReadWrite.All" -ForegroundColor Yellow
-            Write-Host " - Files.Read.All or Files.ReadWrite.All" -ForegroundColor Yellow
-            throw "Insufficient permissions"
-        }
+        # Connect to Microsoft Graph
+        Connect-ToGraph
         
-        $allFiles = Get-AllFiles -Site $site
-        Get-SharePointGroupsAndUsers -Site $site
-
-        # Display results
-        Write-Host "`n[=] Audit Results Summary:" -ForegroundColor Green
-        Write-Host " - Total files found: $($allFiles.Count)"
-        if ($allFiles.Count -gt 0) {
-            Write-Host " - Total size: $([math]::Round(($allFiles | Measure-Object -Property Size -Sum).Sum / 1MB, 2)) MB"
+        # Get site information
+        $site = Get-SiteInfo -SiteUrl $siteUrl
+        
+        # Collect file data (with progress bar)
+        $fileData = Get-FileData -Site $site
+        
+        # Get parent folder access data
+        $folderAccess = Get-ParentFolderAccess -Site $site
+        
+        # Output summary to console
+        Write-Host "`n" + "="*50 -ForegroundColor Green
+        Write-Host "SCAN COMPLETE - SITE ANALYSIS SUMMARY" -ForegroundColor Green
+        Write-Host "="*50 -ForegroundColor Green
+        Write-Host "Site: $($site.DisplayName)" -ForegroundColor Cyan
+        Write-Host "Total Files: $($fileData.TotalFiles)" -ForegroundColor White
+        Write-Host "Total Size: $($fileData.TotalSizeGB) GB" -ForegroundColor White
+        Write-Host "Parent Folders with Access Data: $($folderAccess.Count)" -ForegroundColor White
+        Write-Host "="*50 -ForegroundColor Green
+        
+        # Ask if user wants Excel report and where to save it
+        $response = Read-Host "`nWould you like to generate an Excel report? (Y/N)"
+        if ($response -match '^[Yy]') {
+            Add-Type -AssemblyName PresentationFramework
+            $saveDialog = New-Object Microsoft.Win32.SaveFileDialog
+            $saveDialog.Title = "Save SharePoint Excel Report"
+            $saveDialog.Filter = "Excel Files (*.xlsx)|*.xlsx"
+            $saveDialog.FileName = "SharePoint_Storage_Report_$(Get-Date -Format yyyyMMdd_HHmmss).xlsx"
+            $dialogResult = $saveDialog.ShowDialog()
             
-            # Show file type breakdown
-            $fileTypes = $allFiles | Group-Object Extension | Sort-Object Count -Descending
-            Write-Host " - File types found:" -ForegroundColor Cyan
-            foreach ($type in $fileTypes | Select-Object -First 10) {
-                Write-Host "   $($type.Name): $($type.Count) files" -ForegroundColor White
-            }
-            
-            # Show largest files
-            $largestFiles = $allFiles | Sort-Object Size -Descending | Select-Object -First 5
-            Write-Host " - Largest files:" -ForegroundColor Cyan
-            foreach ($file in $largestFiles) {
-                $sizeMB = [math]::Round($file.Size / 1MB, 2)
-                Write-Host "   $($file.Name): $sizeMB MB" -ForegroundColor White
-            }
-        } else {
-            Write-Host " - No user files found. This could mean:" -ForegroundColor Yellow
-            Write-Host "   1. The site contains only SharePoint system files" -ForegroundColor White
-            Write-Host "   2. All files are in excluded system folders" -ForegroundColor White
-            Write-Host "   3. The drive might be empty or access restricted" -ForegroundColor White
-        }
-        
-        $choice = Read-Host "`nDo you want to export results to Excel? (Y/N)"
-        if ($choice -match '^(y|yes)$') {
-            if ($allFiles.Count -gt 0) {
-                Export-ExcelReport -Data $allFiles
+            if ($dialogResult -eq $true) {
+                New-ExcelReport -FileData $fileData -FolderAccess $folderAccess -Site $site -FileName $saveDialog.FileName
+                Write-Host "`nReport saved to: $($saveDialog.FileName)" -ForegroundColor Green
             } else {
-                Write-Host "No files to export." -ForegroundColor Yellow
+                Write-Host "Excel report was not saved." -ForegroundColor Yellow
             }
         }
-    } catch {
-        Write-Host "`n[!] Script failed with error:" -ForegroundColor Red
-        Write-Host $_.Exception.Message -ForegroundColor Yellow
-        Write-Host "`nTroubleshooting tips:" -ForegroundColor Cyan
-        Write-Host "1. Verify the app registration has these permissions:" -ForegroundColor White
-        Write-Host "   - Sites.Read.All" -ForegroundColor White
-        Write-Host "   - Files.Read.All" -ForegroundColor White
-        Write-Host "   - Group.Read.All" -ForegroundColor White
-        Write-Host "2. Check the client secret hasn't expired" -ForegroundColor White
-        Write-Host "3. Verify the service principal has been created in the tenant" -ForegroundColor White
-        exit 1
+        
+    }
+    catch {
+        Write-Host "`nError: $_" -ForegroundColor Red
+        Write-Host "Stack Trace: $($_.ScriptStackTrace)" -ForegroundColor DarkRed
+    }
+    finally {
+        Disconnect-MgGraph -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
     }
 }
 
+# Execute the script
 Main
