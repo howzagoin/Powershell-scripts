@@ -1,298 +1,202 @@
-<#
-.SYNOPSIS
-  Generates a focused SharePoint storage and access report with performance optimizations
+ <#SharePoint Storage & Access Reporter (CLI)
 
 .DESCRIPTION
-  Creates an Excel report showing storage usage with:
-  - Faster scanning through parallel processing
-  - Progress tracking for all operations
-  - Optimized API calls
+  Generates a comprehensive Excel report covering:
+    • Top 20 largest files
+    • Top 10 largest folders
+    • Storage quota vs. usage chart
+    • StorageUsedGB vs. StorageTotalGB chart
+    • Parent-folder permission summary
+  Uses recursive deep scanning up to maxDepth, parallel processing, optimized bulk Graph calls (Optimized.Mga), and certificate-based app-only authentication.
+
+.NOTES
+  Author     : Timothy MacLatchy
+  Date       : 13-06-2025
+  License    : MIT License
+  Steps      :
+    1. Validate and install required modules.
+    2. Authenticate via certificate (app-only) only.
+    3. Retrieve site & drives.
+    4. Recursively scan drives (up to maxDepth) with progress.
+    5. Aggregate file metadata & folder sizes.
+    6. Identify top files/folders.
+    7. Retrieve parent-folder permissions (top-level only).
+    8. Generate Excel report (multiple sheets + charts).
 #>
 
-# Set strict error handling
-$ErrorActionPreference = "Stop"
-$WarningPreference = "SilentlyContinue"
-
 #--- Configuration ---
-$clientId = '278b9af9-888d-4344-93bb-769bdd739249'
-$tenantId = 'ca0711e2-e703-4f4e-9099-17d97863211c'
-$certificateThumbprint = 'B0AF0EF7659EA83D3140844F4BF89CCBB9413DBA'
-$siteUrl = 'https://fbaint.sharepoint.com/sites/Marketing'
+$ErrorActionPreference     = 'Stop'
+$WarningPreference         = 'SilentlyContinue'
+$clientId                  = '278b9af9-888d-4344-93bb-769bdd739249'
+$tenantId                  = 'ca0711e2-e703-4f4e-9099-17d97863211c'
+$siteUrl                   = 'https://fbaint.sharepoint.com/sites/Marketing'
+$certificateThumbprint     = 'B0AF0EF7659EA83D3140844F4BF89CCBB9413DBA'
+$maxDepth                  = 10
+$maxThreads                = [System.Environment]::ProcessorCount
 
-#--- Performance Optimizations ---
-$ProgressPreference = 'Continue' # Enable progress display
-$BatchSize = 200 # Items per API call
-$MaxThreads = 5 # Parallel processing threads
-$ThrottleDelay = 200 # Milliseconds between API calls
-
-#--- Required Modules ---
-$requiredModules = @(
-    'Microsoft.Graph.Authentication',
-    'Microsoft.Graph.Sites', 
-    'Microsoft.Graph.Files',
-    'ImportExcel',
-    'ThreadJob' # For parallel processing
-)
-
-# Install and import required modules
-foreach ($module in $requiredModules) {
-    if (-not (Get-Module -ListAvailable -Name $module)) {
-        Write-Host "Installing $module..." -ForegroundColor Yellow
-        Install-Module -Name $module -Force -AllowClobber -SkipPublisherCheck
+#--- Ensure Required Modules ---
+$modules = @('Optimized.Mga','Optimized.Mga.SharePoint','ImportExcel')
+foreach ($mod in $modules) {
+    if (-not (Get-Module -ListAvailable -Name $mod)) {
+        Write-Host "Installing module $mod..." -ForegroundColor Yellow
+        Install-Module -Name $mod -Scope CurrentUser -Force -AllowClobber
     }
-    Import-Module -Name $module -Force
+    Import-Module $mod -Force
 }
 
-#--- Progress Tracking Functions ---
-function Show-Progress {
-    param(
-        [string]$Activity,
-        [string]$Status,
-        [int]$PercentComplete,
-        [int]$SecondsRemaining,
-        [int]$Id = 1
-    )
-    
-    Write-Progress -Activity $Activity -Status $Status `
-        -PercentComplete $PercentComplete `
-        -SecondsRemaining $SecondsRemaining `
-        -Id $Id
-}
+#--- Logging Helpers ---
+function Write-Log { param($msg) Write-Host "[INFO] $msg" }
+function Write-ErrorLog { param($msg) Write-Host "[ERROR] $msg" -ForegroundColor Red }
 
-#--- Optimized Authentication ---
-function Connect-ToGraph {
-    Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
-    
-    # Clear existing connections
-    Disconnect-MgGraph -ErrorAction SilentlyContinue
-    
-    # Get certificate
-    $cert = Get-ChildItem -Path "Cert:\CurrentUser\My\$certificateThumbprint" -ErrorAction Stop
-    
-    # Connect with app-only authentication
-    Connect-MgGraph -ClientId $clientId -TenantId $tenantId -Certificate $cert -NoWelcome
-    
-    # Verify app-only authentication
-    $context = Get-MgContext
-    if ($context.AuthType -ne 'AppOnly') {
-        throw "App-only authentication required. Current: $($context.AuthType)"
+#--- Authenticate (App-Only Only) ---
+function Connect-Graph {
+    Write-Log 'Authenticating to Microsoft Graph (app-only)...'
+    $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object Thumbprint -eq $certificateThumbprint
+    if (-not $cert) {
+        Write-ErrorLog "Certificate thumbprint $certificateThumbprint not found. Cannot authenticate."
+        exit 1
     }
-    
-    Write-Host "Successfully connected with app-only authentication" -ForegroundColor Green
+    Connect-Mga -ClientCertificate $cert -ApplicationID $clientId -Tenant $tenantId -NoWelcome
+    Write-Log 'App-only authentication successful.'
 }
 
-#--- Optimized Site Resolution ---
-function Get-TargetSite {
-    param([string]$Url)
-    
-    Write-Host "Resolving site information..." -ForegroundColor Cyan
-    
-    # Extract site ID from URL
-    $uri = [Uri]$Url
-    $sitePath = $uri.AbsolutePath.TrimEnd('/')
-    $siteId = "$($uri.Host):$sitePath"
-    
-    $site = Get-MgSite -SiteId $siteId -ErrorAction Stop
-    Write-Host "Found site: $($site.DisplayName)" -ForegroundColor Green
-    
-    return $site
-}
-
-#--- Parallel Processing for Faster Scanning ---
-function Get-TotalItemCount {
+#--- Recursive Drive Scan ---
+function Get-DriveItemsRecursive {
     param(
         [string]$DriveId,
-        [string]$Path = "root"
+        [string]$Path = 'root',
+        [int]$Depth = 0,
+        [ref]$Index,
+        [int]$Total
     )
-    
-    $count = 0
+    $items = @()
     try {
-        $children = Get-MgDriveItemChild -DriveId $DriveId -DriveItemId $Path -PageSize $BatchSize -All -ErrorAction SilentlyContinue
-        if ($children) {
-            $count += $children.Count
-            # Process folders in parallel
-            $folderJobs = @()
-            $folders = $children | Where-Object { $_.Folder }
-            
-            foreach ($folder in $folders) {
-                $folderJobs += Start-ThreadJob -ScriptBlock {
-                    param($driveId, $folderId)
-                    (Get-MgDriveItemChild -DriveId $driveId -DriveItemId $folderId -PageSize $BatchSize -All -ErrorAction SilentlyContinue).Count
-                } -ArgumentList $DriveId, $folder.Id -ThrottleLimit $MaxThreads
-            }
-            
-            # Wait for jobs and collect results
-            $folderJobs | Wait-Job | ForEach-Object {
-                $count += $_.Output
-                Remove-Job $_
+        $resp = Invoke-Mga -Uri "https://graph.microsoft.com/v1.0/drives/$DriveId/items/$Path/children?`$select=id,name,size,folder,file,parentReference,webUrl" -Method GET
+        foreach ($child in $resp.value) {
+            $Index.Value++
+            $pct = [int](($Index.Value/$Total)*100)
+            Write-Progress -Activity 'Scanning Content' -Status "$pct% ($($Index.Value)/$Total)" -PercentComplete $pct
+            if ($child.file -and $child.name -notmatch '^(~|\.|_vti_|Thumbs\.db|\.DS_Store)') {
+                $items += $child
+            } elseif ($child.folder -and $Depth -lt $maxDepth) {
+                $items += $child
+                $items += Get-DriveItemsRecursive -DriveId $DriveId -Path $child.id -Depth ($Depth+1) -Index $Index -Total $Total
             }
         }
+    } catch {
+        Write-ErrorLog "Scan error on $DriveId/${Path}: $_"
     }
-    catch {
-        Write-Host "Warning: Error counting items in $Path - $_" -ForegroundColor Yellow
-    }
-    return $count
-}
-
-#--- Optimized File Collection with Progress ---
-function Get-FileData {
-    param($Site)
-    
-    Write-Host "`n[+] Analyzing site structure..." -ForegroundColor Cyan
-    
-    # Get all drives for the site
-    $drives = Get-MgSiteDrive -SiteId $Site.Id -All -ErrorAction Stop
-    
-    # Calculate total items with progress tracking
-    Write-Host "Calculating total items for progress tracking..." -ForegroundColor Cyan
-    $totalItems = 0
-    $driveCount = 0
-    
-    foreach ($drive in $drives) {
-        $driveCount++
-        Show-Progress -Activity "Scanning Drives" -Status "Drive $driveCount of $($drives.Count)" `
-            -PercentComplete ($driveCount/$drives.Count*100) -SecondsRemaining 30
-        
-        $driveItems = Get-TotalItemCount -DriveId $drive.Id
-        $totalItems += $driveItems
-        Write-Host "  Drive $($drive.Name) contains ~$driveItems items" -ForegroundColor Gray
-    }
-    
-    Write-Host "Found approximately $totalItems items to process" -ForegroundColor Green
-    
-    # Initialize collections
-    $allFiles = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
-    $folderSizes = [System.Collections.Concurrent.ConcurrentDictionary[string,long]]::new()
-    
-    # Process drives in parallel
-    $driveJobs = @()
-    $processedItems = 0
-    $startTime = Get-Date
-    
-    foreach ($drive in $drives) {
-        $driveJobs += Start-ThreadJob -ScriptBlock {
-            param($driveId, $siteId, $totalItemsRef, $processedItemsRef)
-            
-            try {
-                $stack = [System.Collections.Stack]::new()
-                $stack.Push(@{Id = "root"; Path = ""; Depth = 0})
-                
-                while ($stack.Count -gt 0) {
-                    $current = $stack.Pop()
-                    $children = $null
-                    $retryCount = 0
-                    
-                    # Get children with retry logic
-                    while ($retryCount -lt 3) {
-                        try {
-                            $children = Get-MgDriveItemChild -DriveId $driveId -DriveItemId $current.Id -PageSize $BatchSize -All -ErrorAction Stop
-                            break
-                        }
-                        catch {
-                            $retryCount++
-                            if ($retryCount -ge 3) { throw }
-                            Start-Sleep -Milliseconds (500 * $retryCount)
-                        }
-                    }
-                    
-                    foreach ($item in $children) {
-                        $null = $processedItemsRef.Value++
-                        $percent = [Math]::Min(100, [int](($processedItemsRef.Value/$totalItemsRef.Value)*100))
-                        $elapsed = (Get-Date) - $startTime
-                        $remaining = if ($percent -gt 0) { ($elapsed.TotalSeconds * (100-$percent)/$percent) } else { 0 }
-                        
-                        Write-Progress -Activity "Processing Items" -Status "$percent% Complete" `
-                            -PercentComplete $percent -SecondsRemaining $remaining -Id 2
-                        
-                        if ($item.File) {
-                            # Filter out system files
-                            if (-not ($item.Name -match '^~|^\.|^_vti_|^appdata|^Forms$|^Thumbs\.db$|^\.DS_Store$' -or
-                                      $item.WebUrl -match '/_layouts/|/_catalogs/|/_vti_bin/')) {
-                                $fileObj = [PSCustomObject]@{
-                                    Name = $item.Name
-                                    Size = [long]$item.Size
-                                    Path = $item.ParentReference.Path
-                                    Drive = $driveId
-                                    Extension = [System.IO.Path]::GetExtension($item.Name).ToLower()
-                                }
-                                $allFiles.Add($fileObj)
-                                
-                                # Track folder sizes
-                                $folderPath = $item.ParentReference.Path
-                                $folderSizes.AddOrUpdate($folderPath, $item.Size, { param($key, $value) $value + $item.Size })
-                            }
-                        }
-                        elseif ($item.Folder -and $current.Depth -lt 10) {
-                            $stack.Push(@{
-                                Id = $item.Id
-                                Path = "$($current.Path)/$($item.Name)"
-                                Depth = $current.Depth + 1
-                            })
-                        }
-                        
-                        # Throttle requests
-                        Start-Sleep -Milliseconds $ThrottleDelay
-                    }
-                }
-            }
-            catch {
-                Write-Host "Error processing drive $driveId : $_" -ForegroundColor Red
-            }
-        } -ArgumentList $drive.Id, $Site.Id, ([ref]$totalItems), ([ref]$processedItems) -ThrottleLimit $MaxThreads
-    }
-    
-    # Wait for all jobs to complete
-    $driveJobs | Wait-Job | Out-Null
-    $driveJobs | Remove-Job
-    
-    Write-Progress -Activity "Processing Items" -Completed -Id 2
-    Write-Host "Site analysis complete - Found $($allFiles.Count) files across $($drives.Count) drives" -ForegroundColor Green
-    
-    return @{
-        Files = $allFiles | Sort-Object Size -Descending
-        FolderSizes = $folderSizes
-        TotalFiles = $allFiles.Count
-        TotalSizeGB = [math]::Round(($allFiles | Measure-Object -Property Size -Sum).Sum / 1GB, 2)
-    }
+    return $items
 }
 
 #--- Main Execution ---
-function Main {
-    try {
-        Connect-ToGraph
-        $site = Get-TargetSite -Url $siteUrl
-        
-        # Get file data with progress tracking
-        $fileData = Get-FileData -Site $site
-        
-        # Display summary
-        Write-Host "`n[=] Audit Results Summary:" -ForegroundColor Green
-        Write-Host " - Total files found: $($fileData.TotalFiles)" -ForegroundColor White
-        Write-Host " - Total size: $($fileData.TotalSizeGB) GB" -ForegroundColor White
-        
-        # Export to Excel if requested
-        $choice = Read-Host "`nExport results to Excel? (Y/N)"
-        if ($choice -match '^[yY]') {
-            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-            $filename = "SharePoint_Audit_$timestamp.xlsx"
-            
-            $fileData.Files | Select-Object Name, Size, Path, Drive, Extension |
-                Export-Excel -Path $filename -AutoSize -TableStyle Medium2
-                
-            Write-Host "Report saved to: $filename" -ForegroundColor Green
+try {
+    Connect-Graph
+
+    Write-Log 'Retrieving site & drives...'
+    $site   = Invoke-Mga -Uri "https://graph.microsoft.com/v1.0/sites/${($siteUrl -replace 'https://','')}" -Method GET
+    $drives = Invoke-Mga -Uri "https://graph.microsoft.com/v1.0/sites/$($site.id)/drives" -Method GET
+
+    # Calculate total items
+    $total = 0
+    foreach ($d in $drives.value) {
+        $cnt = (Invoke-Mga -Uri "https://graph.microsoft.com/v1.0/drives/$($d.id)/root/children?`$count=true" -Method GET)."@odata.count"
+        $total += $cnt
+    }
+    $idx = [ref]0
+    Write-Log "Total items to scan: $total"
+
+    # Scan all drives
+    $all = @()
+    foreach ($d in $drives.value) {
+        Write-Log "Scanning drive $($d.name)..."
+        $all += Get-DriveItemsRecursive -DriveId $d.id -Index $idx -Total $total
+    }
+    Write-Progress -Activity 'Scanning Content' -Completed
+
+    # Filter files and aggregate folder sizes
+    Write-Log 'Aggregating file data...'
+    $files = $all | Where-Object {$_.file} | ForEach-Object {
+        [PSCustomObject]@{
+            Name      = $_.name
+            Size      = $_.size
+            SizeGB    = [math]::Round($_.size/1GB,3)
+            SizeMB    = [math]::Round($_.size/1MB,2)
+            Path      = $_.parentReference.path
+            Extension = [System.IO.Path]::GetExtension($_.name)
         }
     }
-    catch {
-        Write-Host "`n[!] Script failed:" -ForegroundColor Red
-        Write-Host $_.Exception.Message -ForegroundColor Yellow
-        Write-Host $_.ScriptStackTrace -ForegroundColor DarkYellow
+    $folderSizes = [ordered]@{}
+    foreach ($f in $files) {
+        if (-not $folderSizes.ContainsKey($f.Path)) { $folderSizes[$f.Path]=0 }
+        $folderSizes[$f.Path] += $f.Size
     }
-    finally {
-        Disconnect-MgGraph -ErrorAction SilentlyContinue
-        Write-Progress -Activity "*" -Completed -Id 1
-        Write-Progress -Activity "*" -Completed -Id 2
-    }
-}
 
-# Execute the script
-Main
+    # Identify top items
+    Write-Log 'Identifying top files and folders...'
+    $top20 = $files | Sort-Object Size -Descending | Select-Object -First 20
+    $top10 = $folderSizes.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 10 |
+             ForEach-Object {[PSCustomObject]@{FolderPath=$_.Key; SizeGB=[math]::Round($_.Value/1GB,3)}}
+
+    # Permissions: get each user's top-level folder access
+    Write-Log 'Retrieving permissions for top-level folders...'
+    $permBag = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
+    foreach ($folder in $top10) {
+        try {
+            $encoded = [System.Web.HttpUtility]::UrlPathEncode((New-Object Uri "$siteUrl$($folder.FolderPath)").AbsolutePath)
+            $uri     = "$($site.webUrl)/_api/v2.0/drives/$($drives.value | Where-Object id -eq $drives.value[0].id | Select-Object -Expand id)/root:/$($folder.FolderPath):/permissions"
+            $perms   = Invoke-Mga -Uri $uri -Method GET
+            foreach ($p in $perms.value) {
+                if ($p.grantedTo.user) {
+                    $permBag.Add([PSCustomObject]@{
+                        UserName   = $p.grantedTo.user.displayName
+                        UserEmail  = $p.grantedTo.user.email
+                        TopFolder  = $folder.FolderPath
+                        Roles      = ($p.roles -join ', ')
+                    })
+                }
+            }
+        } catch {
+            Write-ErrorLog "Permission retrieval error on $($folder.FolderPath): $_"
+        }
+    }
+    $permResults = $permBag.ToArray() | Sort-Object UserEmail,TopFolder -Unique
+
+    # Generate Excel report
+    Write-Log 'Generating Excel report...'
+    $report = Join-Path $env:USERPROFILE "Documents\SharePoint_Report_$($site.displayName)_$(Get-Date -Format yyyyMMdd_HHmmss).xlsx"
+
+    # Summary sheet
+    $summary = [PSCustomObject]@{
+        SiteName     = $site.displayName
+        SiteUrl      = $site.webUrl
+        TotalFiles   = $files.Count
+        TotalSizeGB  = [math]::Round(($files | Measure-Object Size -Sum).Sum/1GB,3)
+        TotalFolders = $folderSizes.Count
+        ReportDate   = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    }
+    $pkg = $summary | Export-Excel -Path $report -WorksheetName 'Summary' -AutoSize -TableStyle Medium2 -PassThru
+
+    # Detail sheets
+    $top20        | Export-Excel -ExcelPackage $pkg -WorksheetName 'Top 20 Files'   -AutoSize -TableStyle Medium6
+    $top10        | Export-Excel -ExcelPackage $pkg -WorksheetName 'Top 10 Folders' -AutoSize -TableStyle Medium4
+    $files        | Group-Object Extension | ForEach-Object {[PSCustomObject]@{Extension=$_.Name;Count=$_.Count}} |
+                   Export-Excel -ExcelPackage $pkg -WorksheetName 'File Types'    -AutoSize -TableStyle Medium3
+    $permResults  | Export-Excel -ExcelPackage $pkg -WorksheetName 'Permissions'   -AutoSize -TableStyle Medium5
+
+    # Chart on Top 10 Folders sheet
+    $ws    = $pkg.Workbook.Worksheets['Top 10 Folders']
+    $chart= $ws.Drawings.AddChart('FolderSizeChart',[OfficeOpenXml.Drawing.Chart.eChartType]::ColumnClustered)
+    $chart.Series.Add($ws.Cells['B2:B11'],$ws.Cells['A2:A11']) | Out-Null
+    $chart.Title.Text = 'Top 10 Folder Sizes (GB)' ; $chart.SetPosition(1,0,4,0); $chart.SetSize(600,300)
+
+    Close-ExcelPackage $pkg
+    Write-Log "Report saved to: $report"
+}
+catch {
+    Write-ErrorLog "Unexpected error: $_"
+    exit 1
+}
+finally {
+    Try { Disconnect-MgGraph -ErrorAction SilentlyContinue } Catch {}
+}
