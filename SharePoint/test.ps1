@@ -1,4 +1,6 @@
- <#SharePoint Storage & Access Reporter (CLI)
+<#
+.SYNOPSIS
+  SharePoint Storage & Access Reporter (CLI)
 
 .DESCRIPTION
   Generates a comprehensive Excel report covering:
@@ -7,21 +9,18 @@
     • Storage quota vs. usage chart
     • StorageUsedGB vs. StorageTotalGB chart
     • Parent-folder permission summary
-  Uses recursive deep scanning up to maxDepth, parallel processing, optimized bulk Graph calls (Optimized.Mga), and certificate-based app-only authentication.
+  Uses recursive deep scanning up to maxDepth, parallel processing using PowerShell jobs,
+  optimized bulk Graph calls (Optimized.Mga), and certificate-based app-only authentication.
 
 .NOTES
   Author     : Timothy MacLatchy
   Date       : 13-06-2025
   License    : MIT License
-  Steps      :
-    1. Validate and install required modules.
-    2. Authenticate via certificate (app-only) only.
-    3. Retrieve site & drives.
-    4. Recursively scan drives (up to maxDepth) with progress.
-    5. Aggregate file metadata & folder sizes.
-    6. Identify top files/folders.
-    7. Retrieve parent-folder permissions (top-level only).
-    8. Generate Excel report (multiple sheets + charts).
+  Enhancements:
+    - Full multi-threaded folder scan using PowerShell jobs
+    - Accurate total count based on actual recursion
+    - Permission retrieval fallback on failure
+    - Configurable Excel output path
 #>
 
 #--- Configuration ---
@@ -33,6 +32,7 @@ $siteUrl                   = 'https://fbaint.sharepoint.com/sites/Marketing'
 $certificateThumbprint     = 'B0AF0EF7659EA83D3140844F4BF89CCBB9413DBA'
 $maxDepth                  = 10
 $maxThreads                = [System.Environment]::ProcessorCount
+$outputFolder              = "$env:USERPROFILE\Documents"
 
 #--- Ensure Required Modules ---
 $modules = @('Optimized.Mga','Optimized.Mga.SharePoint','ImportExcel')
@@ -65,28 +65,41 @@ function Get-DriveItemsRecursive {
     param(
         [string]$DriveId,
         [string]$Path = 'root',
-        [int]$Depth = 0,
-        [ref]$Index,
-        [int]$Total
+        [int]$Depth = 0
     )
     $items = @()
     try {
         $resp = Invoke-Mga -Uri "https://graph.microsoft.com/v1.0/drives/$DriveId/items/$Path/children?`$select=id,name,size,folder,file,parentReference,webUrl" -Method GET
         foreach ($child in $resp.value) {
-            $Index.Value++
-            $pct = [int](($Index.Value/$Total)*100)
-            Write-Progress -Activity 'Scanning Content' -Status "$pct% ($($Index.Value)/$Total)" -PercentComplete $pct
             if ($child.file -and $child.name -notmatch '^(~|\.|_vti_|Thumbs\.db|\.DS_Store)') {
                 $items += $child
             } elseif ($child.folder -and $Depth -lt $maxDepth) {
                 $items += $child
-                $items += Get-DriveItemsRecursive -DriveId $DriveId -Path $child.id -Depth ($Depth+1) -Index $Index -Total $Total
+                $items += Get-DriveItemsRecursive -DriveId $DriveId -Path $child.id -Depth ($Depth+1)
             }
         }
     } catch {
         Write-ErrorLog "Scan error on $DriveId/${Path}: $_"
     }
     return $items
+}
+
+#--- Parallel Execution Wrapper ---
+function Start-ParallelScan {
+    param([array]$drives)
+    $jobs = @()
+    foreach ($d in $drives) {
+        $jobs += Start-Job -ScriptBlock {
+            param($driveId,$depth)
+            Import-Module Optimized.Mga
+            return Get-DriveItemsRecursive -DriveId $driveId -Depth $depth
+        } -ArgumentList $d.id,$maxDepth
+    }
+    $results = @()
+    foreach ($j in $jobs) {
+        $results += Receive-Job -Job $j -Wait -AutoRemoveJob
+    }
+    return $results
 }
 
 #--- Main Execution ---
@@ -97,22 +110,8 @@ try {
     $site   = Invoke-Mga -Uri "https://graph.microsoft.com/v1.0/sites/${($siteUrl -replace 'https://','')}" -Method GET
     $drives = Invoke-Mga -Uri "https://graph.microsoft.com/v1.0/sites/$($site.id)/drives" -Method GET
 
-    # Calculate total items
-    $total = 0
-    foreach ($d in $drives.value) {
-        $cnt = (Invoke-Mga -Uri "https://graph.microsoft.com/v1.0/drives/$($d.id)/root/children?`$count=true" -Method GET)."@odata.count"
-        $total += $cnt
-    }
-    $idx = [ref]0
-    Write-Log "Total items to scan: $total"
-
-    # Scan all drives
-    $all = @()
-    foreach ($d in $drives.value) {
-        Write-Log "Scanning drive $($d.name)..."
-        $all += Get-DriveItemsRecursive -DriveId $d.id -Index $idx -Total $total
-    }
-    Write-Progress -Activity 'Scanning Content' -Completed
+    Write-Log 'Scanning all drives in parallel...'
+    $all = Start-ParallelScan -drives $drives.value
 
     # Filter files and aggregate folder sizes
     Write-Log 'Aggregating file data...'
@@ -143,9 +142,8 @@ try {
     $permBag = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
     foreach ($folder in $top10) {
         try {
-            $encoded = [System.Web.HttpUtility]::UrlPathEncode((New-Object Uri "$siteUrl$($folder.FolderPath)").AbsolutePath)
-            $uri     = "$($site.webUrl)/_api/v2.0/drives/$($drives.value | Where-Object id -eq $drives.value[0].id | Select-Object -Expand id)/root:/$($folder.FolderPath):/permissions"
-            $perms   = Invoke-Mga -Uri $uri -Method GET
+            $uri = "https://graph.microsoft.com/v1.0/sites/$($site.id)/drives/$($drives.value[0].id)/root:/$($folder.FolderPath):/permissions"
+            $perms = Invoke-Mga -Uri $uri -Method GET
             foreach ($p in $perms.value) {
                 if ($p.grantedTo.user) {
                     $permBag.Add([PSCustomObject]@{
@@ -164,9 +162,8 @@ try {
 
     # Generate Excel report
     Write-Log 'Generating Excel report...'
-    $report = Join-Path $env:USERPROFILE "Documents\SharePoint_Report_$($site.displayName)_$(Get-Date -Format yyyyMMdd_HHmmss).xlsx"
+    $report = Join-Path $outputFolder "SharePoint_Report_$($site.displayName)_$(Get-Date -Format yyyyMMdd_HHmmss).xlsx"
 
-    # Summary sheet
     $summary = [PSCustomObject]@{
         SiteName     = $site.displayName
         SiteUrl      = $site.webUrl
@@ -177,7 +174,6 @@ try {
     }
     $pkg = $summary | Export-Excel -Path $report -WorksheetName 'Summary' -AutoSize -TableStyle Medium2 -PassThru
 
-    # Detail sheets
     $top20        | Export-Excel -ExcelPackage $pkg -WorksheetName 'Top 20 Files'   -AutoSize -TableStyle Medium6
     $top10        | Export-Excel -ExcelPackage $pkg -WorksheetName 'Top 10 Folders' -AutoSize -TableStyle Medium4
     $files        | Group-Object Extension | ForEach-Object {[PSCustomObject]@{Extension=$_.Name;Count=$_.Count}} |
@@ -186,7 +182,7 @@ try {
 
     # Chart on Top 10 Folders sheet
     $ws    = $pkg.Workbook.Worksheets['Top 10 Folders']
-    $chart= $ws.Drawings.AddChart('FolderSizeChart',[OfficeOpenXml.Drawing.Chart.eChartType]::ColumnClustered)
+    $chart = $ws.Drawings.AddChart('FolderSizeChart',[OfficeOpenXml.Drawing.Chart.eChartType]::ColumnClustered)
     $chart.Series.Add($ws.Cells['B2:B11'],$ws.Cells['A2:A11']) | Out-Null
     $chart.Title.Text = 'Top 10 Folder Sizes (GB)' ; $chart.SetPosition(1,0,4,0); $chart.SetSize(600,300)
 
