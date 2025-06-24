@@ -1,14 +1,4 @@
-Import-Module ActiveDirectory
-
-# Define the target OU
-$ou = "OU=Managed Users,DC=fba,DC=com,DC=au"
-
-# Get all users in the specified OU
-$users = Get-ADUser -Filter * -SearchBase $ou -Properties HomeDirectory, HomeDrive
-
-foreach ($user in $users) {
-    Set-ADUser -Identity $user.DistinguishedName `
-               -HomeDirectory $null `
-               -HomeDrive $null
-    Write-Host "✅ Cleared home folder for: $($user.SamAccountName)"
-}
+$apiKey = "4KgveJYUOWZ5mio5lhR"
+$authString = "$apiKey:X"
+$encodedAuth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($authString))
+$headers = @{ Authorization = "Basic $encodedAuth" }
