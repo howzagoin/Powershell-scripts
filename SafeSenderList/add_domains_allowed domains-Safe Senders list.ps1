@@ -5,7 +5,8 @@ if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
 Import-Module ImportExcel
 
 # Define credentials and connection details
-$AdminUsername = 'user@domain.com'
+$AdminUsername = 'admin@domain.com'
+$AdminPassword = 'Password123'
 $UserToSearch = 'user@domain.com'
 
 # Connect to Exchange Online
@@ -17,7 +18,7 @@ Write-Host "Successfully connected to Exchange Online."
 
 # Define the list of email addresses to add to the safe sender list
 $SafeSenders = @(
-   example@email.com
+    "example@domain.com"
 )
 
 # Get the current safe sender list and remove duplicates

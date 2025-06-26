@@ -1,5 +1,5 @@
 ﻿# Define the path to the CSV file
-$csvFilePath = "GranularAdministerRelationship.csv"
+$csvFilePath = "C:\Users\TimothyRobertMacLatc\Downloads\GranularAdministerRelationship.csv"
 
 # Import the CSV file
 $tenants = Import-Csv -Path $csvFilePath
@@ -46,4 +46,4 @@ foreach ($tenant in $tenants) {
 $allMfaDisabledUsers | Format-Table -AutoSize
 
 # Optionally, export the list to a CSV file
-$allMfaDisabledUsers | Export-Csv -Path "C:\All_Tenants_MFA_Disabled_Users.csv" -NoTypeInformation
+$allMfaDisabledUsers | Export-Csv -Path "C:\Users\TimothyRobertMacLatc\Downloads\All_Tenants_MFA_Disabled_Users.csv" -NoTypeInformation

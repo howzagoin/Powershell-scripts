@@ -1,7 +1,7 @@
 # Author: Tim MacLatchy
 # Date: 16/10/2024
 # License: MIT License
-# Description: This script connects to Exchange Online to inspect mailboxes with redirect rules to external addresses.
+# Description: This script connects to Exchange Online to inspect mailboxes with redirect rules. 
 
 # Import required modules
 if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
@@ -16,12 +16,17 @@ Connect-ExchangeOnline -UserPrincipalName $adminAccount -ShowProgress $true
 # Function to inspect and manage inbox rules
 function Inspect-InboxRules {
     param (
-        [string]$mailbox,
-        [array]$rules
+        [string]$mailbox
     )
 
     Write-Host "Inspecting mailbox: $mailbox"
-    
+    try {
+        $rules = Get-InboxRule -Mailbox $mailbox
+    } catch {
+        Write-Host "Failed to retrieve inbox rules for mailbox: $mailbox"
+        return
+    }
+
     if ($rules.Count -eq 0) {
         Write-Host "No inbox rules found for mailbox: $mailbox"
         return
@@ -32,13 +37,12 @@ function Inspect-InboxRules {
     foreach ($rule in $rules) {
         Write-Host "--------------------------------------"
         Write-Host "Rule ${index}:"
-        Write-Host "Name         : $($rule.Name)"
-        Write-Host "Description  : $($rule.Description)"
-        Write-Host "Enabled      : $($rule.Enabled)"
-        Write-Host "Priority     : $($rule.Priority)"
-        Write-Host "Conditions   : $($rule.Conditions)"
-        Write-Host "Actions      : $($rule.Actions)"
-        Write-Host "Created On   : $($rule.WhenCreated)"  # Include creation date
+        Write-Host "Name       : $($rule.Name)"
+        Write-Host "Description: $($rule.Description)"
+        Write-Host "Enabled    : $($rule.Enabled)"
+        Write-Host "Priority   : $($rule.Priority)"
+        Write-Host "Conditions : $($rule.Conditions)"
+        Write-Host "Actions    : $($rule.Actions)"
         Write-Host "RuleIdentity : $($rule.RuleIdentity)"
         Write-Host "--------------------------------------"
 
@@ -84,40 +88,21 @@ function Inspect-InboxRules {
 }
 
 # Main script logic
-$totalMailboxesScanned = 0
-$totalMailboxesWithRedirectRules = 0
-
-$mailboxes = Get-Mailbox -ResultSize Unlimited
-
-foreach ($mailbox in $mailboxes) {
-    $totalMailboxesScanned++
-
-    try {
-        # Attempt to get inbox rules for the mailbox
-        $rules = Get-InboxRule -Mailbox $mailbox.PrimarySmtpAddress
-        
-        # Check for redirect rules to external domains
-        $redirectRules = $rules | Where-Object { $_.RedirectTo -and $_.RedirectTo -notlike "*@$(($mailbox.PrimarySmtpAddress -split '@')[1])" }
-
-        # Display if any valid rules are found
-        if ($redirectRules.Count -gt 0) {
-            Write-Host "--------------------------------------"
-            Write-Host "Mailbox: $($mailbox.PrimarySmtpAddress)"
-            Inspect-InboxRules -mailbox $mailbox.PrimarySmtpAddress $redirectRules
-            $totalMailboxesWithRedirectRules++
-        }
-
-    } catch {
-        # Handle any errors during rule retrieval or processing
-        Write-Warning "The Inbox rule for mailbox $($mailbox.PrimarySmtpAddress) contains errors. Please review the rule manually."
+$mailboxesWithRedirectRules = Get-Mailbox -ResultSize Unlimited | Where-Object {
+    $rules = Get-InboxRule -Mailbox $_.PrimarySmtpAddress
+    $rules | Where-Object { $_.RedirectTo -and $_.RedirectTo -notlike "*@safecompanydomain.com" }
+    #SET THE safecompanydomain.com TO CHECK FOR REDIRECT RULES to external domains
+}
+if ($mailboxesWithRedirectRules.Count -eq 0) {
+    Write-Host "No mailboxes with redirect rules found."
+} else {
+    Write-Host "Listing mailboxes with redirect rules..."
+    foreach ($mailbox in $mailboxesWithRedirectRules) {
+        Write-Host "--------------------------------------"
+        Write-Host "Mailbox: $($mailbox.PrimarySmtpAddress)"
+        Inspect-InboxRules -mailbox $mailbox.PrimarySmtpAddress
     }
 }
-
-# Summary output
-Write-Host "--------------------------------------"
-Write-Host "Summary:"
-Write-Host "Total mailboxes scanned: $totalMailboxesScanned"
-Write-Host "Total mailboxes with redirect rules to external addresses: $totalMailboxesWithRedirectRules"
 
 # Disconnect from Exchange Online
 Disconnect-ExchangeOnline -Confirm:$false

@@ -1,4 +1,4 @@
-﻿# Author: Tim MacLatchy (Modified by Claude)
+﻿# Author: Tim MacLatchy
 # Date: 14/08/2024
 # License: MIT License
 # Description: Enhanced script for managing Exchange Online calendar permissions with MFA authentication.

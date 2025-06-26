@@ -59,7 +59,7 @@ if ($confirmation -ne "yes") {
     exit
 }
 
-# Function to add or update delegate access with error handling
+# Function to add delegate access with error handling
 function Add-DelegateAccess {
     param (
         [string]$calendarOwner,
@@ -70,26 +70,15 @@ function Add-DelegateAccess {
     Write-Host "`nSetting delegate access for $delegate on $calendarOwner's calendar..."
 
     try {
-        # First check if the user already has a permission entry
-        $existingPermission = Get-MailboxFolderPermission -Identity "${calendarOwner}:\Calendar" -User $delegate -ErrorAction SilentlyContinue
-        
-        if ($existingPermission) {
-            Write-Host "User $delegate already has access. Updating the permission to $accessType..."
-
-            # Remove the existing permission before setting the new one
-            Remove-MailboxFolderPermission -Identity "${calendarOwner}:\Calendar" -User $delegate -ErrorAction Stop
-        }
-
-        # Set the new delegate permissions
+        # Set delegate permissions
         Add-MailboxFolderPermission -Identity "${calendarOwner}:\Calendar" -User $delegate -AccessRights $accessType -ErrorAction Stop
-
         Write-Host "Delegate access successfully set for $delegate on $calendarOwner's calendar."
     } catch {
         Write-Host "Error setting delegate access for $delegate on $calendarOwner's calendar: $_"
     }
 }
 
-# Add or update the delegate access
+# Add the delegate access
 Add-DelegateAccess -calendarOwner $calendarOwner -delegate $delegate -accessType $accessType
 
 # Output current delegate access after changes
