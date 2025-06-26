@@ -1,0 +1,46 @@
+
+      --------------------------------------
+      Error Stack:: "AxiosError: Request failed with status code 401\n    at Ne (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\freshworksmarketplace.freddy-copilot-2.5.1\\dist\\extension.js:2:312506)\n    at IncomingMessage.<anonymous> (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\freshworksmarketplace.freddy-copilot-2.5.1\\dist\\extension.js:2:324376)\n    at c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\danielsanmedium.dscodegpt-3.12.95\\standalone\\.next\\server\\instrumentation.js:3:16240\n    at AsyncLocalStorage.run (node:internal/async_local_storage/async_hooks:91:14)\n    at t.with (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\danielsanmedium.dscodegpt-3.12.95\\standalone\\.next\\server\\instrumentation.js:25:49810)\n    at t.with (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\danielsanmedium.dscodegpt-3.12.95\\standalone\\.next\\server\\instrumentation.js:25:33987)\n    at IncomingMessage.r (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\danielsanmedium.dscodegpt-3.12.95\\standalone\\.next\\server\\instrumentation.js:3:16231)\n    at IncomingMessage.emit (node:events:530:35)\n    at endReadableNT (node:internal/streams/readable:1698:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)"
+      Error Message:: "Request failed with status code 401"
+      Error Name:: "AxiosError"
+      Request ID:: b5a55e2e-e5f4-4dc5-a8fc-21d48a710877
+      
+      Env:: release
+      API Route:: /api/v1/copilot/migration_scope
+      API Response Message:: Invalid token
+      API Response Error Type:: unauthorized
+
+      Timestamp:: Wed, 25 Jun 2025 04:19:39 GMT
+      Extension Version:: 2.5.1
+      --------------------------------------
+    
+      --------------------------------------
+      Error Stack:: "Error: Please set up the FDK path to proceed, you can set up the path from settings.\n    at a.FdkHelper.getfdkPathFromConfig (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\freshworksmarketplace.freddy-copilot-2.5.1\\dist\\extension.js:2:218053)\n    at a.FdkHelper.runInBackground (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\freshworksmarketplace.freddy-copilot-2.5.1\\dist\\extension.js:2:219500)\n    at a.FdkHelper.getFdkVersion (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\freshworksmarketplace.freddy-copilot-2.5.1\\dist\\extension.js:2:215203)\n    at v.getFdkVersion (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\freshworksmarketplace.freddy-copilot-2.5.1\\dist\\extension.js:2:284059)\n    at v.resolveWebviewView (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\freshworksmarketplace.freddy-copilot-2.5.1\\dist\\extension.js:2:260282)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async rJ.$resolveWebviewView (file:///c:/Users/Timothy.MacLatchy/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/workbench/api/node/extensionHostProcess.js:171:90696)"
+      Error Message:: "Please set up the FDK path to proceed, you can set up the path from settings."
+      Error Name:: "Error"
+      
+      
+      
+      
+      
+      
+
+      Timestamp:: Wed, 25 Jun 2025 04:19:39 GMT
+      Extension Version:: 2.5.1
+      --------------------------------------
+    
+      --------------------------------------
+      Error Stack:: "Error: Please set up the FDK path to proceed, you can set up the path from settings.\n    at a.FdkHelper.getfdkPathFromConfig (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\freshworksmarketplace.freddy-copilot-2.5.1\\dist\\extension.js:2:218053)\n    at a.FdkHelper.runInBackground (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\freshworksmarketplace.freddy-copilot-2.5.1\\dist\\extension.js:2:219500)\n    at a.FdkHelper.getFdkVersion (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\freshworksmarketplace.freddy-copilot-2.5.1\\dist\\extension.js:2:215203)\n    at v.getFdkVersion (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\freshworksmarketplace.freddy-copilot-2.5.1\\dist\\extension.js:2:284059)\n    at v.resolveWebviewView (c:\\Users\\Timothy.MacLatchy\\.vscode\\extensions\\freshworksmarketplace.freddy-copilot-2.5.1\\dist\\extension.js:2:260282)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async rJ.$resolveWebviewView (file:///c:/Users/Timothy.MacLatchy/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/workbench/api/node/extensionHostProcess.js:171:90696)"
+      Error Message:: "Please set up the FDK path to proceed, you can set up the path from settings."
+      Error Name:: "Error"
+      
+      
+      
+      
+      
+      
+
+      Timestamp:: Wed, 25 Jun 2025 06:32:57 GMT
+      Extension Version:: 2.5.1
+      --------------------------------------
+    
