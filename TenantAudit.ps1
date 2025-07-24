@@ -1,1045 +1,799 @@
-<#
-.SYNOPSIS
-  Unified Microsoft 365 Tenant Audit Script: Users, Groups, Mailboxes, and Teams
+#region metadata# Script Metadata
+# Author: Tim MacLatchy
+# Date: 17-07-2025
+# License: MIT
+# Description: Audits Microsoft 365 tenant users, mailboxes, groups, permissions, calendar sharing, enterprise apps, licenses, domains, and exports all results to a formatted Excel workbook.
+# Steps:
+#   1. Verify and install required modules
+#   2. Authenticate to Microsoft Graph and Exchange Online
+#   3. Retrieve users, mailboxes, groups, permissions, calendar, app, license, and domain data
+#   4. Export all data to a formatted Excel file
+#endregion
 
-.DESCRIPTION
-  Performs a comprehensive audit across the entire Microsoft 365 tenant, EXCLUDING SharePoint site/folder/file access or storage scanning. This script includes:
-  - All users: MFA status, license status, group memberships, mailbox details, mailbox rules, delegates, external forwarding, calendar permissions, and Teams policies
-  - All groups: membership, access, and permissions
-  - All mailboxes: size, delegates, rules, external forwarding, and distribution list membership
-  - Teams: user meeting, permission, and setup policies
-  - Aggregates and exports all results to a well-structured Excel report with multiple worksheets and charts for each data type
+#region 1. Initialization & Modules
+Write-Progress -Activity 'Initialization & Modules' -Status 'Loading...' -PercentComplete 0
+$ErrorActionPreference = 'Stop'
+$WarningPreference     = 'SilentlyContinue'
+Add-Type -AssemblyName System.Windows.Forms
 
-  Features:
-  - Scans the entire tenant (not just a single site)
-  - Excludes SharePoint site/folder/file access and storage scanning (use SharePointAudit2025.ps1 for SharePoint audits)
-  - Aggregates and summarizes results for easy review
-  - Modern error handling and reporting
-  - Modular, maintainable, and extensible design
-#>
+$global:AuditStats = [ordered]@{
+    UsersProcessed    = 0
+    RulesProcessed    = 0
+    ErrorsEncountered = 0
+    StartTime         = Get-Date
+}
 
-# Set strict error handling
-$ErrorActionPreference = "Stop"
-$WarningPreference     = "SilentlyContinue"
-
-#--- Configuration ---
-$clientId              = '278b9af9-888d-4344-93bb-769bdd739249'
-$tenantId              = 'ca0711e2-e703-4f4e-9099-17d97863211c'
-$certificateThumbprint = 'B0AF0EF7659EA83D3140844F4BF89CCBB9413DBA'
-
-#--- Required Modules ---
-$requiredModules = @(
+$modules = @(
     'Microsoft.Graph.Authentication',
     'Microsoft.Graph.Users',
+    'Microsoft.Graph.Groups',
+    'Microsoft.Graph.Identity.DirectoryManagement',
+    'Microsoft.Graph.Applications',
+    'ExchangeOnlineManagement',
     'ImportExcel'
 )
 
-# Install and import required modules
-foreach ($module in $requiredModules) {
-    if (-not (Get-Module -ListAvailable -Name $module)) {
-        Write-Host "Installing $module..." -ForegroundColor Yellow
-        Install-Module -Name $module -Force -AllowClobber -SkipPublisherCheck -WarningAction SilentlyContinue
-    }
-    Import-Module -Name $module -Force -WarningAction SilentlyContinue
-}
-
-#--- Authentication ---
-function Connect-ToGraph {
-    Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
-
-    # Clear existing connections
-    Disconnect-MgGraph -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
-
-    # Get certificate
-    $cert = Get-ChildItem -Path "Cert:\CurrentUser\My\$certificateThumbprint" -ErrorAction Stop
-
-    # Connect with app-only authentication
-    Connect-MgGraph -ClientId $clientId -TenantId $tenantId -Certificate $cert -NoWelcome -WarningAction SilentlyContinue
-
-    # Verify app-only authentication
-    $context = Get-MgContext
-    if ($context.AuthType -ne 'AppOnly') {
-        throw "App-only authentication required. Current: $($context.AuthType)"
-    }
-
-    Write-Host "Successfully connected with app-only authentication" -ForegroundColor Green
-}
-
-#--- Get Total Item Count (for progress bar) ---
-function Get-TotalItemCount {
-    param(
-        [string]$DriveId,
-        [string]$Path = "root"
-    )
-
-    $count = 0
-    try {
-        $children = Get-MgDriveItemChild -DriveId $DriveId -DriveItemId $Path -All -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
-        if ($children) {
-            $count += $children.Count
-            foreach ($child in $children) {
-                if ($child.Folder) {
-                    $count += Get-TotalItemCount -DriveId $DriveId -Path $child.Id
-                }
-            }
-        }
-    } catch {
-        # Silently handle errors
-    }
-    return $count
-}
-
-function Show-Spinner {
-    param([int]$Step)
-    $spinners = @('|', '/', '-', '\')
-    return $spinners[$Step % $spinners.Length]
-}
-
-#--- Retry Wrapper for Graph API Calls ---
-function Invoke-WithRetry {
-    param(
-        [scriptblock]$ScriptBlock,
-        [int]$MaxRetries = 5,
-        [int]$DelaySeconds = 2
-    )
-    $attempt = 0
-    while ($true) {
+foreach ($m in $modules) {
+    if (-not (Get-Module -ListAvailable -Name $m)) {
         try {
-            return & $ScriptBlock
+            Install-Module -Name $m -Scope CurrentUser -Force -WarningAction SilentlyContinue
         } catch {
-            if ($_.Exception.Response -and $_.Exception.Response.StatusCode -eq 429) {
-                $attempt++
-                if ($attempt -ge $MaxRetries) { throw }
-                $wait = $DelaySeconds * $attempt
-                Write-Host "Throttled (429). Retrying in $wait seconds..." -ForegroundColor Yellow
-                Start-Sleep -Seconds $wait
-            } else {
-                throw
-            }
+            Write-Warning ("Failed to install module " + $m + ": " + $_.Exception.Message)
         }
     }
-}
-
-#--- Collect File Data (with Batch API for children, with pagination, hashtable-safe) ---
-function Get-FileData {
-    param(
-        $Site,
-        [switch]$Incremental,
-        [int]$MaxDepth        = 5,
-        [string[]]$IncludeFolders = @(),
-        [string[]]$ExcludeFolders = @()
-    )
-    Write-Host "Analyzing site structure (SharePoint List API)..." -ForegroundColor Cyan
-
-    $scanCache = if ($Incremental) { Load-ScanCache } else { @{} }
-
-    $result       = Get-SharePointLibraryFilesViaListApi -Site $Site -Incremental:$Incremental -scanCache $scanCache
-    $allFiles     = $result.Files
-    $folderSizes  = $result.FolderSizes
-
-    Write-Host "Site analysis complete - Found $($allFiles.Count) files via List API" -ForegroundColor Green
-
-    # Save scan cache for incremental runs
-    if ($Incremental) {
-        $newCache = @{}
-        foreach ($item in $allFiles) {
-            $newCache[$item.Name] = @{ lastModifiedDateTime = $item.LastModifiedDateTime }
-        }
-        Save-ScanCache $newCache
-    }
-
-    return @{
-        Files        = $allFiles
-        FolderSizes  = $folderSizes
-        TotalFiles   = $allFiles.Count
-        TotalSizeGB  = [math]::Round(($allFiles | Measure-Object -Property Size -Sum).Sum / 1GB, 2)
-    }
-}
-
-#--- Get All Files in SharePoint Library via List API ---
-function Get-SharePointLibraryFilesViaListApi {
-    param(
-        $Site,
-        [switch]$Incremental,
-        $scanCache = @{}
-    )
-    $allFiles    = @()
-    $allFolders  = @()
-    $folderSizes = @{}
-
-    $lists = Invoke-WithRetry { Get-MgSiteList -SiteId $Site.Id -WarningAction SilentlyContinue }
-    $totalLists = ($lists | Where-Object { $_.List -and $_.List.Template -eq 'documentLibrary' }).Count
-    $listIndex = 0
-    $totalFilesSoFar = 0
-    foreach ($list in $lists) {
-        if ($list.List -and $list.List.Template -eq 'documentLibrary') {
-            $listIndex++
-            # Reduce $top to 200 for smaller payloads
-            $uri      = "/v1.0/sites/$($Site.Id)/lists/$($list.Id)/items?expand=fields,driveItem&`$top=200"
-            $more     = $true
-            $nextLink = $null
-            $filesInThisList = 0
-            $foldersInThisList = 0
-            while ($more) {
-                try {
-                    $resp = Invoke-WithRetry {
-                        if ($nextLink) {
-                            Invoke-MgGraphRequest -Method GET -Uri $nextLink
-                        } else {
-                            Invoke-MgGraphRequest -Method GET -Uri $uri
-                        }
-                    }
-                } catch {
-                    Write-Host "Error during library scan: $($list.DisplayName)" -ForegroundColor Red
-                    Write-Host "Request URI: $($nextLink ? $nextLink : $uri)" -ForegroundColor Yellow
-                    Write-Host "Exception: $_" -ForegroundColor Red
-                    throw
-                }
-                $batchCount = 0
-                foreach ($item in $resp.value) {
-                    if ($item.driveItem) {
-                        if ($item.driveItem.file) {
-                            $allFiles += [PSCustomObject]@{
-                                Name                   = $item.driveItem.name
-                                Size                   = [long]$item.driveItem.size
-                                SizeGB                 = [math]::Round($item.driveItem.size / 1GB, 3)
-                                SizeMB                 = [math]::Round($item.driveItem.size / 1MB, 2)
-                                Path                   = $item.driveItem.parentReference ? $item.driveItem.parentReference.path : ''
-                                Drive                  = $item.driveItem.parentReference ? $item.driveItem.parentReference.driveId : ''
-                                Extension              = [System.IO.Path]::GetExtension($item.driveItem.name).ToLower()
-                                LastModifiedDateTime   = $item.driveItem.lastModifiedDateTime
-                            }
-                            $folderPath = $item.driveItem.parentReference ? $item.driveItem.parentReference.path : ''
-                            if (-not $folderSizes.ContainsKey($folderPath)) { $folderSizes[$folderPath] = 0 }
-                            $folderSizes[$folderPath] += $item.driveItem.size
-                            $filesInThisList++
-                            $totalFilesSoFar++
-                        } elseif ($item.driveItem.folder) {
-                            $allFolders += [PSCustomObject]@{
-                                Name = $item.driveItem.name
-                                Path = $item.driveItem.parentReference ? $item.driveItem.parentReference.path : ''
-                                Drive = $item.driveItem.parentReference ? $item.driveItem.parentReference.driveId : ''
-                                ChildCount = $item.driveItem.folder.childCount
-                            }
-                            $foldersInThisList++
-                        }
-                        $batchCount++
-                        # Show progress with current folder as encountered (no sorting)
-                        $currentFolder = $item.driveItem.parentReference ? $item.driveItem.parentReference.path : 'Root'
-                        Write-Progress -Activity "Scanning SharePoint Document Libraries" -Status "Library $listIndex/${totalLists}: $($list.DisplayName) | Files: $totalFilesSoFar | Folders: $($allFolders.Count) | Current Folder: $currentFolder" -PercentComplete ([math]::Min(100, ($listIndex-1)/$totalLists*100 + ($filesInThisList/1000)))
-                    }
-                }
-                if ($resp.'@odata.nextLink') {
-                    $nextLink = $resp.'@odata.nextLink'
-                } else {
-                    $more = $false
-                }
-                # Optional: Add a small randomized delay to avoid throttling
-                Start-Sleep -Milliseconds (Get-Random -Minimum 100 -Maximum 400)
-            }
-        }
-    }
-    Write-Progress -Activity "Scanning SharePoint Document Libraries" -Completed
-    return @{ Files = $allFiles; Folders = $allFolders; FolderSizes = $folderSizes }
-}
-
-#--- Get Parent Folder Access Information ---
-function Get-ParentFolderAccess {
-    param($Site)
-
-    Write-Host "Retrieving parent folder access information..." -ForegroundColor Cyan
-
-    $folderAccess     = @()
-    $processedFolders = @{}
-
     try {
-        # Get all drives for the site
-        $drives = Get-MgSiteDrive -SiteId $Site.Id -WarningAction SilentlyContinue
-
-        foreach ($drive in $drives) {
-            try {
-                # Get root folders only (first level)
-                $rootFolders = Get-MgDriveItemChild -DriveId $drive.Id -DriveItemId "root" -All -ErrorAction Stop |
-                               Where-Object { $_.Folder }
-
-                foreach ($folder in $rootFolders) {
-                    if ($processedFolders.ContainsKey($folder.Id)) { continue }
-                    $processedFolders[$folder.Id] = $true
-
-                    try {
-                        $permissions = Get-MgDriveItemPermission -DriveId $drive.Id -DriveItemId $folder.Id -All -ErrorAction Stop
-
-                        foreach ($perm in $permissions) {
-                            $roles = ($perm.Roles | Where-Object { $_ }) -join ', '
-
-                            if ($perm.GrantedToIdentitiesV2) {
-                                foreach ($identity in $perm.GrantedToIdentitiesV2) {
-                                    if ($identity.User.DisplayName) {
-                                        $folderAccess += [PSCustomObject]@{
-                                            FolderName      = $folder.Name
-                                            FolderPath      = $folder.ParentReference.Path + '/' + $folder.Name
-                                            UserName        = $identity.User.DisplayName
-                                            UserEmail       = $identity.User.Email
-                                            PermissionLevel = $roles
-                                            AccessType      = if ($roles -match 'owner|write') { 'Full/Edit' } 
-                                                              elseif ($roles -match 'read') { 'Read Only' } 
-                                                              else { 'Other' }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if ($perm.GrantedTo -and $perm.GrantedTo.User.DisplayName) {
-                                $folderAccess += [PSCustomObject]@{
-                                    FolderName      = $folder.Name
-                                    FolderPath      = $folder.ParentReference.Path + '/' + $folder.Name
-                                    UserName        = $perm.GrantedTo.User.DisplayName
-                                    UserEmail       = $perm.GrantedTo.User.Email
-                                    PermissionLevel = $roles
-                                    AccessType      = if ($roles -match 'owner|write') { 'Full/Edit' } 
-                                                      elseif ($roles -match 'read') { 'Read Only' } 
-                                                      else { 'Other' }
-                                }
-                            }
-                        }
-                    } catch {
-                        Write-Host "Warning: Could not retrieve permissions for folder $($folder.Name) - $_" -ForegroundColor Yellow
-                    }
-                }
-            } catch {
-                Write-Host "Warning: Could not access drive $($drive.Id) - $_" -ForegroundColor Yellow
-            }
-        }
-
-        # Remove duplicates (same user with same access to same folder)
-        $folderAccess = $folderAccess | Sort-Object FolderName, UserName, PermissionLevel -Unique
-
-        Write-Host "Found access data for $($folderAccess.Count) parent folder permissions" -ForegroundColor Green
-
+        Import-Module $m -Force
     } catch {
-        Write-Host "Error retrieving folder access data: $_" -ForegroundColor Red
-        $folderAccess = @(
-            [PSCustomObject]@{
-                FolderName      = "Permission Error"
-                FolderPath      = "Check permissions"
-                UserName        = "Unable to retrieve data"
-                UserEmail       = "Requires additional permissions"
-                PermissionLevel = "N/A"
-                AccessType      = "Error"
-            }
-        )
+        Write-Warning ("Failed to import module " + $m + ": " + $_.Exception.Message)
     }
-
-    return $folderAccess
 }
 
-#--- Get Site Users and Groups (Owners, Members, Guests, Externals) ---
-function Get-SiteUserAccessSummary {
-    param($Site, $FolderAccess)
-
-    $owners   = @()
-    $members  = @()
-    $guests   = @()
-    $externals= @()
-
-    try {
-        # Get site groups
-        $groups = Invoke-WithRetry { Get-MgSiteGroup -SiteId $Site.Id -WarningAction SilentlyContinue }
-        $ownersGroup  = $groups | Where-Object { $_.DisplayName -match 'Owner' }
-        $membersGroup = $groups | Where-Object { $_.DisplayName -match 'Member' }
-        $visitorsGroup= $groups | Where-Object { $_.DisplayName -match 'Visitor' }
-
-        # Get group members
-        $getGroupUsers = { param($group) if ($group) { Get-MgGroupMember -GroupId $group.Id -All -WarningAction SilentlyContinue } else { @() } }
-        $ownerUsers    = & $getGroupUsers $ownersGroup
-        $memberUsers   = & $getGroupUsers $membersGroup
-        $visitorUsers  = & $getGroupUsers $visitorsGroup
-
-        # Helper to get user email
-        function Get-UserEmail($user) {
-            if ($user.UserPrincipalName) { return $user.UserPrincipalName }
-            if ($user.Mail) { return $user.Mail }
-            return $null
-        }
-
-        # Classify users
-        $allAccess = $FolderAccess | Group-Object UserEmail
-        foreach ($userGroup in $allAccess) {
-            $userEmail = $userGroup.Name
-            $userAccess = $userGroup.Group
-            $topFolders = $userAccess | Sort-Object FolderPath | Select-Object -First 1 -ExpandProperty FolderPath
-            $userObj = [PSCustomObject]@{
-                UserName  = ($userAccess | Select-Object -First 1).UserName
-                UserEmail = $userEmail
-                TopFolder = $topFolders
-                PermissionLevel = ($userAccess | Select-Object -First 1).PermissionLevel
-            }
-            if ($ownerUsers | Where-Object { Get-UserEmail $_ -eq $userEmail }) {
-                $owners += $userObj
-            } elseif ($memberUsers | Where-Object { Get-UserEmail $_ -eq $userEmail }) {
-                $members += $userObj
-            } elseif ($visitorUsers | Where-Object { Get-UserEmail $_ -eq $userEmail }) {
-                $guests += $userObj
-            } elseif ($userEmail -match '@' -and $userEmail -notmatch $Site.WebUrl) {
-                $externals += $userObj
-            }
-        }
-    } catch {
-        Write-Host "Error retrieving site user/group access: $_" -ForegroundColor Red
-    }
-    return @{ Owners = $owners; Members = $members; Guests = $guests; Externals = $externals }
+# Ensure ExchangeOnlineManagement is available before continuing
+if (-not (Get-Module -ListAvailable -Name 'ExchangeOnlineManagement')) {
+    Write-Host 'ERROR: ExchangeOnlineManagement module is not installed. Please install it and try again.' -ForegroundColor Red
+    exit 1
 }
+Write-Progress -Activity 'Initialization & Modules' -Completed
+#endregion
 
-#--- Create Excel Report ---
-function New-ExcelReport {
+# For individual user audits, use TenantAudit-User.ps1 instead
+Write-Host "Starting full tenant audit..." -ForegroundColor Cyan
+$selectedUsers = @()
+#endregion
+
+#region Helper Functions
+Write-Progress -Activity 'Helper Functions' -Status 'Defining...' -PercentComplete 0
+function Get-UserDirectoryRoles {
     param(
-        $FileData,
-        $FolderAccess,
-        $Site,
-        $FileName
+        [Parameter(Mandatory)]
+        [string]$UserId
     )
-
-    Write-Host "Creating Excel report: $FileName" -ForegroundColor Cyan
-
-    # Prepare data for different sheets
-    $top20Files = $FileData.Files | Sort-Object Size -Descending | Select-Object -First 20 |
-                  Select-Object Name, SizeMB, Path, Drive, Extension
-
-    # Top 10 folders by size
-    $top10Folders = $FileData.FolderSizes.GetEnumerator() |
-                    Sort-Object Value -Descending | Select-Object -First 10 |
-                    ForEach-Object {
-                        [PSCustomObject]@{
-                            FolderPath = $_.Key
-                            SizeGB     = [math]::Round($_.Value / 1GB, 3)
-                            SizeMB     = [math]::Round($_.Value / 1MB, 2)
-                        }
-                    }
-
-    # Storage breakdown by location for pie chart
-    $storageBreakdown = $FileData.FolderSizes.GetEnumerator() |
-                        Sort-Object Value -Descending | Select-Object -First 15 |
-                        ForEach-Object {
-                            $folderName = if ($_.Key -match '/([^/]+)/?$') { $matches[1] } else { "Root" }
-                            [PSCustomObject]@{
-                                Location    = $folderName
-                                Path        = $_.Key
-                                SizeGB      = [math]::Round($_.Value / 1GB, 3)
-                                SizeMB      = [math]::Round($_.Value / 1MB, 2)
-                                Percentage  = [math]::Round(($_.Value / ($FileData.Files | Measure-Object Size -Sum).Sum) * 100, 1)
-                            }
-                        }
-
-    # Parent folder access summary
-    $accessSummary = $FolderAccess | Group-Object PermissionLevel |
-                     ForEach-Object {
-                         [PSCustomObject]@{
-                             PermissionLevel = $_.Name
-                             UserCount       = $_.Count
-                             Users           = ($_.Group.UserName | Sort-Object -Unique) -join '; '
-                         }
-                     }
-
-    # Site summary
-    $siteSummary = @(
-        [PSCustomObject]@{
-            SiteName               = $Site.DisplayName
-            SiteUrl                = $Site.WebUrl
-            TotalFiles             = $FileData.TotalFiles
-            TotalFolders           = $FileData.Folders.Count
-            TotalItems             = $FileData.TotalFiles + $FileData.Folders.Count
-            TotalSizeGB            = $FileData.TotalSizeGB
-            TotalSiteStorageGB     = $null  # Will be set below
-            UniquePermissionLevels = ($FolderAccess.PermissionLevel | Sort-Object -Unique).Count
-            ReportDate             = Get-Date -Format "dd-MM-yyyy HH:mm:ss"
-        }
-    )
-    # Try to get total site storage from Graph API (site quota usage summary)
-    try {
-        $siteUsage = Invoke-MgGraphRequest -Method GET -Uri "/v1.0/sites/$($Site.Id)/drive"
-        if ($siteUsage.quota -and $siteUsage.quota.used) {
-            $siteSummary[0].TotalSiteStorageGB = [math]::Round($siteUsage.quota.used / 1GB, 2)
-        }
-    } catch {}
-
-    # --- Recycle Bin: Get top 10 largest files and total size ---
-    $recycleBinFiles = @()
-    $recycleBinSize = 0
-    try {
-        $recycleUri = "/v1.0/sites/$($Site.Id)/drive/recycleBin?\$top=500"
-        $recycleResp = Invoke-WithRetry { Invoke-MgGraphRequest -Method GET -Uri $recycleUri }
-        if ($recycleResp.value) {
-            $recycleBinFiles = $recycleResp.value | Where-Object { $_.size } | Sort-Object size -Descending | Select-Object -First 10 |
-                ForEach-Object {
-                    [PSCustomObject]@{
-                        Name = $_.name
-                        SizeMB = [math]::Round($_.size / 1MB, 2)
-                        SizeGB = [math]::Round($_.size / 1GB, 3)
-                        DeletedDateTime = $_.deletedDateTime
+    $roleNames = @()
+    # Get all directory roles in tenant
+    $allRoles = Get-MgDirectoryRole -ErrorAction SilentlyContinue
+    foreach ($role in $allRoles) {
+        try {
+            $members = Get-MgDirectoryRoleMember -DirectoryRoleId $role.Id -ErrorAction SilentlyContinue
+            if ($members) {
+                foreach ($member in $members) {
+                    if ($member.Id -eq $UserId) {
+                        $roleNames += $role.DisplayName
                     }
                 }
-            $recycleBinSize = ($recycleResp.value | Measure-Object -Property size -Sum).Sum
-        }
-    } catch {
-        $recycleBinFiles = @()
-        $recycleBinSize = 0
+            }
+        } catch {}
     }
-
-    # Create Excel file with multiple worksheets (do NOT close until all sheets and charts are added)
-    $excel = $siteSummary | Export-Excel -Path $FileName -WorksheetName "Summary" -AutoSize -TableStyle Medium2 -PassThru
-    $top20Files        | Export-Excel -ExcelPackage $excel -WorksheetName "Top 20 Files"     -AutoSize -TableStyle Medium6
-    $top10Folders      | Export-Excel -ExcelPackage $excel -WorksheetName "Top 10 Folders"   -AutoSize -TableStyle Medium3
-    $storageBreakdown  | Export-Excel -ExcelPackage $excel -WorksheetName "Storage Breakdown" -AutoSize -TableStyle Medium4
-    $FolderAccess      | Export-Excel -ExcelPackage $excel -WorksheetName "Folder Access"    -AutoSize -TableStyle Medium5
-    $accessSummary     | Export-Excel -ExcelPackage $excel -WorksheetName "Access Summary"   -AutoSize -TableStyle Medium1
-    if ($recycleBinFiles.Count -gt 0) {
-        $recycleBinFiles | Export-Excel -ExcelPackage $excel -WorksheetName "Recycle Bin Top 10" -AutoSize -TableStyle Medium12
-    }
-    if ($recycleBinSize -gt 0) {
-        $recycleBinSummary = [PSCustomObject]@{
-            TotalRecycleBinSizeGB = [math]::Round($recycleBinSize / 1GB, 2)
-            TotalRecycleBinSizeMB = [math]::Round($recycleBinSize / 1MB, 2)
-            FileCount = $recycleBinFiles.Count
-        }
-        $recycleBinSummary | Export-Excel -ExcelPackage $excel -WorksheetName "Recycle Bin Summary" -AutoSize -TableStyle Medium13
-    }
-
-    # Add user/group access summary sheets
-    $userAccess = Get-SiteUserAccessSummary -Site $Site -FolderAccess $FolderAccess
-    if ($userAccess.Owners.Count -gt 0) {
-        $userAccess.Owners | Export-Excel -ExcelPackage $excel -WorksheetName "Owners Access" -AutoSize -TableStyle Medium7
-    }
-    if ($userAccess.Members.Count -gt 0) {
-        $userAccess.Members | Export-Excel -ExcelPackage $excel -WorksheetName "Members Access" -AutoSize -TableStyle Medium8
-    }
-    if ($userAccess.Guests.Count -gt 0) {
-        $userAccess.Guests | Export-Excel -ExcelPackage $excel -WorksheetName "Guests Access" -AutoSize -TableStyle Medium9
-    }
-    if ($userAccess.Externals.Count -gt 0) {
-        $userAccess.Externals | Export-Excel -ExcelPackage $excel -WorksheetName "External Access" -AutoSize -TableStyle Medium10
-    }
-
-    # Find files with long path+name (>399 chars)
-    $longPathFiles = $FileData.Files | Where-Object {
-        $fullPath = (($_.Path -replace '^/drive/root:', '') + '/' + $_.Name).Trim('/').Replace('//','/')
-        $fullPath.Length -gt 399
-    } | ForEach-Object {
-        $fullPath = (($_.Path -replace '^/drive/root:', '') + '/' + $_.Name).Trim('/').Replace('//','/')
-        [PSCustomObject]@{
-            Name     = $_.Name
-            Path     = $_.Path
-            FullPath = $fullPath
-            Length   = $fullPath.Length
-            SizeMB   = $_.SizeMB
-        }
-    }
-    if ($longPathFiles.Count -gt 0) {
-        $longPathFiles | Export-Excel -ExcelPackage $excel -WorksheetName "Long Paths (>399 chars)" -AutoSize -TableStyle Medium11
-    }
-
-    # Add charts to the storage breakdown worksheet
-    $ws = $excel.Workbook.Worksheets["Storage Breakdown"]
-    $chart           = $ws.Drawings.AddChart("StorageChart", [OfficeOpenXml.Drawing.Chart.eChartType]::Pie)
-    $chart.Title.Text= "Storage Usage by Location"
-    $chart.SetPosition(1, 0, 7, 0)
-    $chart.SetSize(500, 400)
-    $series          = $chart.Series.Add($ws.Cells["C2:C$($storageBreakdown.Count + 1)"], $ws.Cells["A2:A$($storageBreakdown.Count + 1)"])
-    $series.Header   = "Size (GB)"
-
-    # Add additional summary info
-    $summaryStats = [PSCustomObject]@{
-        Owners_Count    = $userAccess.Owners.Count
-        Members_Count   = $userAccess.Members.Count
-        Guests_Count    = $userAccess.Guests.Count
-        Externals_Count = $userAccess.Externals.Count
-        OtherUsers_Count= ($FolderAccess | Group-Object UserEmail | Where-Object { $_.Name -and ($userAccess.Owners + $userAccess.Members + $userAccess.Guests + $userAccess.Externals | ForEach-Object { $_.UserEmail }) -notcontains $_.Name }).Count
-        LongPathFiles   = $longPathFiles.Count
-        LargestFile     = ($top20Files | Select-Object -First 1).Name
-        LargestFileSize = ($top20Files | Select-Object -First 1).SizeMB
-        LargestFolder   = ($top10Folders | Select-Object -First 1).FolderPath
-        LargestFolderSize = ($top10Folders | Select-Object -First 1).SizeGB
-        RecycleBinSizeGB = [math]::Round($recycleBinSize / 1GB, 2)
-        RecycleBinTopFile = ($recycleBinFiles | Select-Object -First 1).Name
-        RecycleBinTopFileSize = ($recycleBinFiles | Select-Object -First 1).SizeMB
-    }
-    $summaryStats | Export-Excel -ExcelPackage $excel -WorksheetName "Summary" -StartRow ($siteSummary.Count + 3) -AutoSize -TableStyle Medium13
-
-    # Add pie chart for top 10 folders to the Summary worksheet
-    $wsSummary = $excel.Workbook.Worksheets["Summary"]
-    $wsFolders = $excel.Workbook.Worksheets["Top 10 Folders"]
-    if ($wsFolders -and $wsSummary) {
-        $chart2 = $wsSummary.Drawings.AddChart("FoldersPieChart", [OfficeOpenXml.Drawing.Chart.eChartType]::Pie)
-        $chart2.Title.Text = "Top 10 Folders by Size (GB)"
-        $chart2.SetPosition($siteSummary.Count + 10, 0, 0, 0)
-        $chart2.SetSize(500, 400)
-        $series2 = $chart2.Series.Add($wsFolders.Cells["B2:B11"], $wsFolders.Cells["A2:A11"])
-        $series2.Header = "Size (GB)"
-    }
-
-    Close-ExcelPackage $excel
-
-    Write-Host "Excel report created successfully!" -ForegroundColor Green
-    Write-Host "`nReport Contents:" -ForegroundColor Cyan
-    Write-Host "- Summary: Overall site statistics" -ForegroundColor White
-    Write-Host "- Top 20 Files: Largest files by size" -ForegroundColor White  
-    Write-Host "- Top 10 Folders: Largest folders by size" -ForegroundColor White
-    Write-Host "- Storage Breakdown: Space usage by location with pie chart" -ForegroundColor White
-    Write-Host "- Folder Access: Parent folder permissions" -ForegroundColor White
-    Write-Host "- Access Summary: Users grouped by permission level" -ForegroundColor White
-    Write-Host "- Recycle Bin Top 10: Largest deleted files" -ForegroundColor White
-    Write-Host "- Recycle Bin Summary: Total deleted size" -ForegroundColor White
-    Write-Host "- Owners/Members/Guests/Externals: User access details" -ForegroundColor White
-    Write-Host "- Long Paths: Files with long path+name (>399 chars)" -ForegroundColor White
+    if ($roleNames.Count -eq 0) { return 'None' }
+    $sortedRoles = $roleNames | Sort-Object -Unique
+    return ($sortedRoles -join '; ')
 }
+Write-Progress -Activity 'Helper Functions' -Completed
+#endregion
 
-# --- Unified User, Group, and SharePoint Audit Script ---
-# Combines user/MFA/license audit and group/SharePoint access audit with unified Excel export
+#region 2. Choose Excel file path
+Write-Progress -Activity 'Excel File Picker' -Status 'Selecting file...' -PercentComplete 0
+Add-Type -AssemblyName System.Windows.Forms
+$sd = New-Object System.Windows.Forms.SaveFileDialog
+$sd.Title = 'Save Tenant Audit Report'
+$sd.Filter = 'Excel Workbook (*.xlsx)|*.xlsx'
+$sd.InitialDirectory = [Environment]::GetFolderPath('MyDocuments')
+$sd.FileName = "M365_TenantAudit_{0:yyyyMMdd_HHmmss}.xlsx" -f (Get-Date)
+if ($sd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+    Write-Host 'Audit cancelled.' -ForegroundColor Yellow
+    return
+}
+$excelFile = $sd.FileName
+Write-Progress -Activity 'Excel File Picker' -Completed
+#endregion
 
-# --- Import user/MFA/license audit functions ---
-# .\Microsoft365Audit_UserAudit.ps1
-# --- Import group/SharePoint access audit functions ---
-# .\Microsoft365Audit_SharePointAudit.ps1
-
-# --- Main Script ---
+#region 3. Connect to Graph & Exchange (one login)
+Write-Progress -Activity 'Connect to Graph & Exchange' -Status 'Connecting...' -PercentComplete 0
+Connect-MgGraph -Scopes @(
+    'User.Read.All','Group.Read.All','Directory.Read.All',
+    'AuditLog.Read.All','Mail.Read','MailboxSettings.Read',
+    'Policy.Read.All','Application.Read.All'
+) -NoWelcome
+$loginForm = New-Object System.Windows.Forms.Form
+$loginForm.TopMost = $true
+$loginForm.Show()
+$ctx = Get-MgContext
+$exchangeConnected = $false
 try {
-    # Connect to Microsoft Graph
-    Connect-ToGraph
+    Connect-ExchangeOnline -UserPrincipalName $ctx.Account -ShowBanner:$false -ErrorAction Stop
+    $exchangeConnected = $true
+} catch {
+    Write-Host 'ERROR: Exchange Online not connected. Mailbox data will be unavailable. Please check your credentials and network connection.' -ForegroundColor Red
+    $loginForm.Close()
+    exit 1
+}
+$loginForm.Close()
+Write-Progress -Activity 'Connect to Graph & Exchange' -Completed
+#endregion
 
-    # --- User, Group, and License Audit ---
-    $allUsers = Invoke-WithRetry { Get-MgUser -All -Select Id,DisplayName,UserPrincipalName,Mail,UserType,AssignedLicenses,AccountEnabled,LastPasswordChangeDateTime -Top 999 }
-    $userAuditResults = @()
-    $userIndex = 0
-    $totalUsers = $allUsers.Count
-    foreach ($user in $allUsers) {
-        $userIndex++
-        $spinner = '|/-\'[$userIndex % 4]
-        Write-Progress -Activity "Auditing Users" -Status "$spinner Processing user $userIndex of ${totalUsers}: $($user.DisplayName)" -PercentComplete ($userIndex / $totalUsers * 100)
+#region 4. Users and Licenses
+Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Status 'Users & Licenses' -PercentComplete 10
+Write-Host 'Retrieving licenses...'
+$licenses    = Get-MgSubscribedSku -All -ErrorAction Stop
+Write-Host 'Licenses retrieved.'
+$userResults = @()
+if ($selectedUsers.Count -gt 0) {
+    Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Status "Retrieving selected user(s)..." -PercentComplete 15
+    $allUsers = @()
+    foreach ($sel in $selectedUsers) {
+        $user = Get-MgUser -Filter "UserPrincipalName eq '$sel' or Mail eq '$sel' or DisplayName eq '$sel'" -Property Id,DisplayName,UserPrincipalName,AccountEnabled,AssignedLicenses,UserType,JobTitle,MobilePhone,Department,Country,CreatedDateTime,Mail,MailNickname,OtherMails,ProxyAddresses -ErrorAction SilentlyContinue
+        if ($user) { $allUsers += $user }
+        else { Write-Host "User not found: $sel" -ForegroundColor Yellow }
+    }
+    if ($allUsers.Count -eq 0) {
+        Write-Host "No valid users found. Exiting." -ForegroundColor Yellow
+        exit 1
+    }
+    Write-Host "Selected users retrieved: $($allUsers.Count)"
+} else {
+    Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Status "Retrieving all users..." -PercentComplete 15
+    $allUsers = Get-MgUser -All -Property Id,DisplayName,UserPrincipalName,AccountEnabled,AssignedLicenses,UserType,JobTitle,MobilePhone,Department,Country,CreatedDateTime,Mail,MailNickname,OtherMails,ProxyAddresses -ErrorAction Stop
+    Write-Host "Users retrieved: $($allUsers.Count)"
+}
+foreach ($u in $allUsers) {
+    $currentUserIndex = [array]::IndexOf($allUsers, $u) + 1
+    $userPct = [math]::Round(($currentUserIndex / $allUsers.Count) * 100, 1)
+    Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Status "Scanning user $currentUserIndex of $($allUsers.Count): $($u.DisplayName) <$($u.UserPrincipalName)>" -PercentComplete $userPct
+    $assigned = if ($u.AssignedLicenses) {
+        ($u.AssignedLicenses | ForEach-Object {
+            ($licenses | Where-Object SkuId -eq $_.SkuId).SkuPartNumber
+        }) -join '; '
+    } else { 'None' }
+    $params = @{ UserId = $u.Id }
+    $roles = Get-UserDirectoryRoles @params
+    # ...existing code...
+    $mb = Get-Mailbox -Identity $u.UserPrincipalName -ErrorAction SilentlyContinue
+    if ($mb) {
         try {
-            # MFA Status
-            $mfaStatus = "Unknown"
-            try {
-                $authMethods = Get-MgUserAuthenticationMethod -UserId $user.Id -All -WarningAction SilentlyContinue
-                $mfaStatus = if ($authMethods | Where-Object { $_.OdataType -like '*microsoftAuthenticator*' }) { "Enabled" } else { "Disabled" }
-            } catch {}
-
-            # License Status
-            $licenseStatus = if ($user.AssignedLicenses -and $user.AssignedLicenses.Count -gt 0) { "Licensed" } else { "Unlicensed" }
-
-            # Active/Inactive (based on AccountEnabled)
-            $activeStatus = if ($user.AccountEnabled) { "Active" } else { "Inactive" }
-
-            # Last Password Change
-            $lastPasswordChange = $user.LastPasswordChangeDateTime
-
-            # User Timezone
-            $timezone = $null
-            try {
-                $mailboxSettings = Get-MgUserMailboxSetting -UserId $user.Id -ErrorAction SilentlyContinue
-                $timezone = $mailboxSettings.TimeZone
-            } catch {}
-
-            # Mailbox Size & Archive Size
-            $mailboxSize = $null; $archiveSize = $null
-            try {
-                $mbxStats = Get-MailboxStatistics -Identity $user.UserPrincipalName -ErrorAction SilentlyContinue
-                if ($mbxStats) { $mailboxSize = $mbxStats.TotalItemSize.ToString() }
-                $archiveStats = Get-MailboxStatistics -Identity $user.UserPrincipalName -Archive -ErrorAction SilentlyContinue
-                if ($archiveStats) { $archiveSize = $archiveStats.TotalItemSize.ToString() }
-            } catch {}
-
-            # Safe Sender List Count
-            $safeSenderCount = $null
-            try {
-                $safeSenders = Get-MailboxJunkEmailConfiguration -Identity $user.UserPrincipalName -ErrorAction SilentlyContinue
-                if ($safeSenders) { $safeSenderCount = $safeSenders.TrustedSendersAndDomains.Count }
-            } catch {}
-
-            # Calendar Permissions (granted to others)
-            $calendarPermissions = @()
-            try {
-                $calendarPermissions = Get-MailboxFolderPermission -Identity ("$($user.UserPrincipalName):\Calendar") -ErrorAction SilentlyContinue | Where-Object { $_.User -ne "Default" -and $_.User -ne "Anonymous" }
-            } catch {}
-
-            # Delegated Mailboxes and Delegation Type
-            $delegates = @()
-            try {
-                $delegates = Get-MailboxPermission -Identity $user.UserPrincipalName -ErrorAction SilentlyContinue | Where-Object { $_.AccessRights -contains "FullAccess" -and $_.IsInherited -eq $false }
-            } catch {}
-
-            # Mailbox Rules (highlight external redirects)
-            $mailboxRules = @()
-            $externalRedirects = @()
-            try {
-                $rules = Get-InboxRule -Mailbox $user.UserPrincipalName -ErrorAction SilentlyContinue
-                foreach ($rule in $rules) {
-                    $mailboxRules += $rule
-                    if ($rule.RedirectTo -and ($rule.RedirectTo | Where-Object { $_ -notlike "*@yourcompany.com" })) {
-                        $externalRedirects += $rule
-                    }
-                }
-            } catch {}
-
-            # Teams Policies
-            $teamsPolicy = $null
-            try {
-                $teamsPolicy = Get-CsOnlineUser -Identity $user.UserPrincipalName -ErrorAction SilentlyContinue | Select-Object Teams*Policy*
-            } catch {}
-
-            # Licenses (detailed)
-            $licenses = $user.AssignedLicenses | ForEach-Object { $_.SkuId }
-
-            $userAuditResults += [PSCustomObject]@{
-                DisplayName = $user.DisplayName
-                UserPrincipalName = $user.UserPrincipalName
-                UserGuid = $user.Id
-                Mail = $user.Mail
-                UserType = $user.UserType
-                MFAStatus = $mfaStatus
-                LicenseStatus = $licenseStatus
-                Licenses = ($licenses -join ", ")
-                ActiveStatus = $activeStatus
-                LastPasswordChange = $lastPasswordChange
-                TimeZone = $timezone
-                MailboxSize = $mailboxSize
-                ArchiveSize = $archiveSize
-                SafeSenderCount = $safeSenderCount
-                CalendarPermissions = (@($calendarPermissions | ForEach-Object { $_.User + ':' + $_.AccessRights }) -join "; ")
-                Delegates = (@($delegates | ForEach-Object { $_.User + ':' + ($_.AccessRights -join ",") }) -join "; ")
-                MailboxRules = (@($mailboxRules | ForEach-Object { $_.Name }) -join "; ")
-                ExternalRedirectRules = (@($externalRedirects | ForEach-Object { $_.Name }) -join "; ")
-                TeamsPolicies = ($teamsPolicy | ConvertTo-Json -Compress)
-            }
+            $mbStats = Get-EXOMailboxStatistics -Identity $u.UserPrincipalName -ErrorAction Stop |
+                Select-Object TotalItemSize, ItemCount, LastLogonTime, LastLogoffTime, DisplayName
         } catch {
-            Write-Host "Error processing user $($user.DisplayName): $_" -ForegroundColor Red
+            Write-Host "Error retrieving mailbox statistics for $($u.UserPrincipalName): $($_.Exception.Message)" -ForegroundColor Red
+            $global:AuditStats.ErrorsEncountered++
+            $mbStats = $null
+        }
+    } else {
+        $mbStats = $null
+    }
+
+    $mailboxSizeGB = 0
+    if ($mbStats -and $mbStats.TotalItemSize) {
+        $sizeString = $mbStats.TotalItemSize.ToString()
+        if ($sizeString -match '\(([0-9,]+) bytes\)') {
+            $bytesStr = $matches[1] -replace ',',''
+            $mailboxSizeGB = [math]::Round([double]$bytesStr / 1GB, 2)
         }
     }
 
-    # Export to Excel
-    $excelFile = Join-Path $PSScriptRoot "Microsoft365_UserAudit_Detailed_$($tenantId.Substring(0,8))_$((Get-Date).ToString('yyyyMMdd_HHmmss')).xlsx"
-    try {
-        $userAuditResults | Export-Excel -Path $excelFile -WorksheetName "User Audit" -AutoSize -TableStyle Medium2
-        Write-Host "User audit exported to Excel: $excelFile" -ForegroundColor Green
-    } catch {
-        Write-Host "Error exporting user audit to Excel: $_" -ForegroundColor Red
+    $archiveSizeGB = 0
+    if ($mb) {
+        if ($mb.ArchiveStatus -eq 'Active') {
+            try {
+                $archiveStats = Get-EXOMailboxStatistics -Identity $u.UserPrincipalName -Archive -ErrorAction Stop |
+                    Select-Object TotalItemSize, ItemCount, LastLogonTime, LastLogoffTime, DisplayName
+            } catch {
+                Write-Host "Error retrieving archive statistics for $($u.UserPrincipalName): $($_.Exception.Message)" -ForegroundColor Red
+                $archiveStats = $null
+            }
+        } else {
+            $archiveStats = $null
+        }
+    } else {
+        $archiveStats = $null
     }
 
-    # --- Group and SharePoint Access Audit ---
-    $allGroups = Invoke-WithRetry { Get-MgGroup -All -Select Id,DisplayName,MailEnabled,SecurityEnabled,GroupTypes -Top 999 }
-    $groupAuditResults = @()
-    $groupIndex = 0
-    $totalGroups = $allGroups.Count
-    foreach ($group in $allGroups) {
-        $groupIndex++
-        $spinner = '|/-\'[$groupIndex % 4]
-        Write-Progress -Activity "Auditing Groups" -Status "$spinner Processing group $groupIndex of ${totalGroups}: $($group.DisplayName)" -PercentComplete ($groupIndex / $totalGroups * 100)
+    if ($archiveStats -and $archiveStats.TotalItemSize) {
+        $sizeString = $archiveStats.TotalItemSize.ToString()
+        if ($sizeString -match '\(([0-9,]+) bytes\)') {
+            $bytesStr = $matches[1] -replace ',',''
+            $archiveSizeGB = [math]::Round([double]$bytesStr / 1GB, 2)
+        }
+    }
+    $userResults += [PSCustomObject]@{
+        DisplayName       = $u.DisplayName
+        UserPrincipalName = $u.UserPrincipalName
+        AccountEnabled    = $u.AccountEnabled
+        UserType          = $u.UserType
+        JobTitle          = $u.JobTitle
+        MobilePhone       = $u.MobilePhone
+        Department        = $u.Department
+        Country           = $u.Country
+        CreatedDate       = $u.CreatedDateTime
+        AssignedLicenses  = $assigned
+        UserRoles         = $roles
+        MailboxType       = if ($mb) { $mb.RecipientTypeDetails } else { '' }
+        MailboxSizeGB     = if ($mbStats -and $mbStats.TotalItemSize) {
+            [double]$mailboxSizeGB
+        } else {
+            ''
+        }
+        ArchiveSizeGB     = if ($archiveStats -and $archiveStats.TotalItemSize) {
+            [double]$archiveSizeGB
+        } else {
+            ''
+        }
+        Mail              = $u.Mail
+        MailNickname      = $u.MailNickname
+        OtherMails        = if ($u.OtherMails) { $u.OtherMails -join '; ' } else { '' }
+        ProxyAddresses    = if ($u.ProxyAddresses -is [array]) {
+            $u.ProxyAddresses -join '; '
+        } elseif ($u.ProxyAddresses -is [string]) {
+            $u.ProxyAddresses
+        } elseif ($u.ProxyAddresses) {
+            $u.ProxyAddresses.ToString()
+        } else {
+            ''
+        }
+    }
+    $global:AuditStats.UsersProcessed++
+}
+Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Status 'Users & Licenses completed' -PercentComplete 25
+Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Status 'Starting Groups & Members enumeration...' -PercentComplete 30
+#endregion
+
+#region 7. Groups & GroupMembers 
+Write-Progress -Activity 'Groups & Members Enumeration' -Status 'Starting group enumeration...' -PercentComplete 0
+$allGroups = $null
+Write-Host 'Retrieving groups...'
+$allGroups = Get-MgGroup -All -Property Id,DisplayName,Mail,Description,GroupTypes,ResourceProvisioningOptions,MailEnabled,SecurityEnabled,OnPremisesSyncEnabled -ErrorAction Stop
+Write-Host "Groups retrieved: $($allGroups.Count)"
+$groupResults = @()
+$groupMemberResults = @()
+$uniqueGroups = $allGroups | Group-Object Id | ForEach-Object { $_.Group[0] }
+$totalGroups = $uniqueGroups.Count
+for ($i = 0; $i -lt $totalGroups; $i++) {
+    $g   = $uniqueGroups[$i]
+    $pct = [math]::Round((($i+1)/$totalGroups)*100, 1)
+    Write-Progress -Activity 'Groups & Members Enumeration' -Status "Scanning group $($i+1) of ${totalGroups}: $($g.DisplayName)" -PercentComplete $pct
+    # Group type logic
+    $gt = if ($g.ResourceProvisioningOptions -contains 'Team') {
+        'Teams'
+    } elseif ($g.GroupTypes -contains 'SharePoint') {
+        'SharePoint'
+    } elseif ($g.GroupTypes -contains 'DynamicMembership') {
+        'Dynamic'
+    } elseif ($g.MailEnabled -and -not $g.SecurityEnabled) {
+        'Distribution'
+    } elseif ($g.MailEnabled -and $g.SecurityEnabled) {
+        'Mail-Enabled Security'
+    } elseif ($g.GroupTypes -contains 'Unified') {
+        'Microsoft 365'
+    } elseif ($g.OnPremisesSyncEnabled) {
+        'OnPrem AD'
+    } elseif ($g.SecurityEnabled) {
+        'Security'
+    } else {
+        'Other'
+    }
+    $members = @( )
+    $owners = @( )
+    try {
+        $members = @( Get-MgGroupMember -GroupId $g.Id -All -ErrorAction SilentlyContinue )
+    } catch {
+        $members = @()
+    }
+    try {
+        $owners  = @( Get-MgGroupOwner  -GroupId $g.Id -All -ErrorAction SilentlyContinue )
+    } catch {
+        $owners = @()
+    }
+    $ownerNames = $owners | ForEach-Object { $_.AdditionalProperties['displayName'] ?? $_.DisplayName }
+    $groupResults += [PSCustomObject]@{
+        GroupName        = $g.DisplayName
+        GroupType        = $gt
+        EmailAddress     = $g.Mail
+        GroupDescription = $g.Description
+        MemberCount      = $members.Count
+        OwnerCount       = $owners.Count
+        OwnerNames       = $ownerNames -join '; '
+    }
+    foreach ($m in $members) {
+        $dn = $m.AdditionalProperties['displayName'] ?? $m.DisplayName
+        $upn= $m.AdditionalProperties['userPrincipalName'] ?? $m.UserPrincipalName
+        $groupMemberResults += [PSCustomObject]@{
+            GroupName  = $g.DisplayName
+            GroupType  = $gt
+            MemberName = $dn
+            MemberUPN  = $upn
+            MemberType = 'Member'
+        }
+    }
+    foreach ($o in $owners) {
+        $dn = $o.AdditionalProperties['displayName'] ?? $o.DisplayName
+        $upn= $o.AdditionalProperties['userPrincipalName'] ?? $o.UserPrincipalName
+        $groupMemberResults += [PSCustomObject]@{
+            GroupName  = $g.DisplayName
+            GroupType  = $gt
+            MemberName = $dn
+            MemberUPN  = $upn
+            MemberType = 'Owner'
+        }
+    }
+}
+Write-Progress -Activity 'Groups & Members Enumeration' -Status 'Completed group and member enumeration.' -PercentComplete 100
+#endregion
+
+#region 8. Mailbox Rules 
+Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Status 'Starting Mailbox Rules...' -PercentComplete 45
+$mailboxRules = @()
+if ($exchangeConnected) {
+     for ($i = 0; $i -lt $allUsers.Count; $i++) {
+     $u = $allUsers[$i]
+     $mbRulePct = [math]::Round((($i+1)/$allUsers.Count)*100, 1)
+     Write-Progress -Activity 'Mailbox Rules' -Status "Scanning mailbox rules for user $($i+1) of $($allUsers.Count): $($u.DisplayName) <$($u.UserPrincipalName)>" -PercentComplete $mbRulePct
+     try {
+         $rules = Get-InboxRule -Mailbox $u.UserPrincipalName -ErrorAction SilentlyContinue
+     } catch {
+         $rules = $null
+     }
+     try {
+         $oof = Get-MailboxAutoReplyConfiguration -Identity $u.UserPrincipalName -ErrorAction SilentlyContinue
+     } catch {
+         $oof = $null
+     }
+     if ($rules) {
+         foreach ($rule in $rules) {
+             $mailboxRules += [PSCustomObject]@{
+                 MailboxOwner = $u.UserPrincipalName
+                 RuleName     = $rule.Name
+                 Enabled      = $rule.Enabled
+                 ForwardTo    = if ($rule.ForwardTo) { ($rule.ForwardTo | ForEach-Object { $_.ToString() }) -join '; ' } else { '' }
+                 RedirectTo   = if ($rule.RedirectTo) { ($rule.RedirectTo | ForEach-Object { $_.ToString() }) -join '; ' } else { '' }
+                 Description  = $rule.Description
+                 Priority     = $rule.Priority
+                 From         = if ($rule.From) { ($rule.From | ForEach-Object { $_.ToString() }) -join '; ' } else { '' }
+                 SentTo       = if ($rule.SentTo) { ($rule.SentTo | ForEach-Object { $_.ToString() }) -join '; ' } else { '' }
+                 Conditions   = if ($rule.Conditions) { ($rule.Conditions | ForEach-Object { $_.ToString() }) -join '; ' } else { '' }
+                 Actions      = if ($rule.Actions) { ($rule.Actions | ForEach-Object { $_.ToString() }) -join '; ' } else { '' }
+             }
+         }
+     }
+     if ($oof -and $oof.AutomaticRepliesEnabled) {
+         $mailboxRules += [PSCustomObject]@{
+             MailboxOwner = $u.UserPrincipalName
+             RuleType     = 'OutOfOffice'
+             OOFMessage   = $oof.ReplyMessage
+             OOFStartTime = $oof.StartTime
+             OOFEndTime   = $oof.EndTime
+         }
+     }
+     }
+     $global:AuditStats.RulesProcessed = $mailboxRules.Count
+     Write-Progress -Activity 'Mailbox Rules' -Status 'Completed' -PercentComplete 100
+ } else {
+     Write-Warning "Skipping mailbox rules: Exchange Online not connected."
+ }
+Write-Progress -Activity 'Mailbox Rules' -Completed
+#endregion
+
+#region 9. DelegatedMailboxes
+Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Status 'Processing Delegated Mailboxes...' -PercentComplete 60
+$delegatedMailboxes = @()
+ for ($i = 0; $i -lt $allUsers.Count; $i++) {
+     $u = $allUsers[$i]
+     $delPct = [math]::Round((($i+1)/$allUsers.Count)*100, 1)
+     Write-Progress -Activity 'DelegatedMailboxes' -Status "Scanning delegated mailboxes for user $($i+1) of $($allUsers.Count): $($u.DisplayName) <$($u.UserPrincipalName)>" -PercentComplete $delPct
+     $mb = Get-Mailbox -Identity $u.UserPrincipalName -ErrorAction SilentlyContinue
+     if ($mb) {
+         Get-MailboxPermission -Identity $u.UserPrincipalName -ErrorAction SilentlyContinue |
+             Where-Object { $_.User -notlike 'NT AUTHORITY*' -and $_.User -notlike 'S-1-*' } | ForEach-Object {
+                 $delegatedMailboxes += [PSCustomObject]@{
+                     MailboxOwner   = $u.UserPrincipalName
+                     DelegateUser   = $_.User
+                     MailboxType    = $mb.RecipientTypeDetails
+                     AccessRights   = ($_.AccessRights -join ', ')
+                     DelegationType = $(if ($_.IsInherited) { 'Inherited' } else { 'Direct' })
+                 }
+             }
+     }
+ }
+Write-Progress -Activity 'DelegatedMailboxes' -Completed
+#endregion
+
+#region 10. Calendars (only shared with others)
+Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Status 'Processing Calendar Permissions...' -PercentComplete 70
+$calendars = @()
+ for ($i = 0; $i -lt $allUsers.Count; $i++) {
+    $u = $allUsers[$i]
+    $calPct = [math]::Round((($i+1)/$allUsers.Count)*100, 1)
+    Write-Progress -Activity 'Calendars' -Status "Scanning calendars for user $($i+1) of $($allUsers.Count): $($u.DisplayName) <$($u.UserPrincipalName)>" -PercentComplete $calPct
+    $mb = Get-Mailbox -Identity $u.UserPrincipalName -ErrorAction SilentlyContinue
+    if ($mb) {
         try {
-            # Group Type (Unified, Security, etc.)
-            $groupType = if ($group.GroupTypes -and $group.GroupTypes.Count -gt 0) { $group.GroupTypes -join ", " } else { "N/A" }
-
-            # Mail-enabled (for distribution lists)
-            $mailEnabled = $group.MailEnabled
-
-            # Security-enabled (for security groups)
-            $securityEnabled = $group.SecurityEnabled
-
-            # Owners and Members
-            $owners = @()
-            $members = @()
-            try {
-                $ownersGroup = $null
-                if ($groupType -like "*unified*") {
-                    # For Microsoft 365 Groups (Unified groups)
-                    $ownersGroup = $group.Id
-                } else {
-                    # For regular security groups
-                    $ownersGroup = ($group | Get-MgGroupOwner -All -WarningAction SilentlyContinue)
-                }
-                $owners = $ownersGroup | Where-Object { $_.UserPrincipalName } | ForEach-Object { $_.UserPrincipalName }
-
-                # Members (all types)
-                $members = $group.Id | Get-MgGroupMember -All -WarningAction SilentlyContinue | Where-Object { $_.UserPrincipalName } | ForEach-Object { $_.UserPrincipalName }
-            } catch {}
-
-            # Group Email (for mail-enabled groups)
-            $groupEmail = $null
-            if ($mailEnabled) {
+            $folders = Get-MailboxFolderStatistics -Identity $u.UserPrincipalName -ErrorAction SilentlyContinue
+            $calendarFolders = $folders | Where-Object { $_.FolderPath -match "^/Calendar" -or $_.FolderType -like '*Calendar*' }
+            foreach ($folder in $calendarFolders) {
+                $cleanPath = $folder.FolderPath.TrimStart("/").Replace("/", "\")
+                if ($cleanPath -eq "\\") { $cleanPath = "Calendar" }
+                # Skip problematic folders
+                if ($folder.Name -eq "Calendar Logging" -or [string]::IsNullOrWhiteSpace($cleanPath)) { continue }
+                $folderIdentity = "$($u.UserPrincipalName):\$cleanPath"
                 try {
-                    $groupEmail = ($group | Get-MgGroupEmail -ErrorAction SilentlyContinue).Mail
+                    $perms = Get-MailboxFolderPermission -Identity $folderIdentity -ErrorAction SilentlyContinue
+                    if ($perms) {
+                        $filteredPermissions = $perms | Where-Object { 
+                            # Include permissions that are not Default/Anonymous AND have actual rights
+                            $_.User.DisplayName -notin @('Default','Anonymous') -and 
+                            ($_.AccessRights | Where-Object { $_ -notin @('None','AvailabilityOnly') }).Count -gt 0
+                        }
+                        if ($filteredPermissions.Count -gt 0) {
+                            foreach ($perm in $filteredPermissions) {
+                                $calendars += [PSCustomObject]@{
+                                    CalendarOwner   = $u.UserPrincipalName
+                                    CalendarName    = $folder.Name
+                                    SharedWithUser  = $perm.User.ToString()
+                                    AccessRights    = ($perm.AccessRights -join ', ')
+                                    MailboxType     = $mb.RecipientTypeDetails
+                                    DelegationType  = if ($perm.SharingPermissionFlags) { 'Shared' } else { 'Delegated' }
+                                    FolderPath      = $cleanPath
+                                    ItemCount       = $folder.ItemsInFolder
+                                }
+                            }
+                        }
+                    }
                 } catch {}
             }
-
-            $groupAuditResults += [PSCustomObject]@{
-                GroupName         = $group.DisplayName
-                GroupId           = $group.Id
-                GroupType         = $groupType
-                MailEnabled       = $mailEnabled
-                SecurityEnabled   = $securityEnabled
-                Owners             = ($owners -join "; ")
-                Members            = ($members -join "; ")
-                GroupEmail        = $groupEmail
-            }
-        } catch {
-            Write-Host "Error processing group $($group.DisplayName): $_" -ForegroundColor Red
-        }
+        } catch {}
     }
-
-    # Export group audit to Excel
-    $excelFileGroups = Join-Path $PSScriptRoot "Microsoft365_GroupAudit_$($tenantId.Substring(0,8))_$((Get-Date).ToString('yyyyMMdd_HHmmss')).xlsx"
-    try {
-        $groupAuditResults | Export-Excel -Path $excelFileGroups -WorksheetName "Group Audit" -AutoSize -TableStyle Medium2
-        Write-Host "Group audit exported to Excel: $excelFileGroups" -ForegroundColor Green
-    } catch {
-        Write-Host "Error exporting group audit to Excel: $_" -ForegroundColor Red
-    }
-
-    # --- SharePoint Site and Content Audit ---
-    $allSites = Invoke-WithRetry { Get-MgSite -All -Select Id,DisplayName,WebUrl,SiteCollection,CreatedDateTime,LastModifiedDateTime -Top 999 }
-    $siteAuditResults = @()
-    $siteIndex = 0
-    $totalSites = $allSites.Count
-    foreach ($site in $allSites) {
-        $siteIndex++
-        $spinner = '|/-\'[$siteIndex % 4]
-        Write-Progress -Activity "Auditing Sites" -Status "$spinner Processing site $siteIndex of ${totalSites}: $($site.DisplayName)" -PercentComplete ($siteIndex / $totalSites * 100)
-        try {
-            # Site URL and Collection
-            $siteUrl = $site.WebUrl
-            $siteCollection = $site.SiteCollection
-
-            # Created and Modified Dates
-            $createdDate = $site.CreatedDateTime
-            $lastModifiedDate = $site.LastModifiedDateTime
-
-            # Owner and Member count
-            $owners = @()
-            $members = @()
-            try {
-                $siteGroups = Invoke-WithRetry { Get-MgSiteGroup -SiteId $site.Id -WarningAction SilentlyContinue }
-                $ownersGroup  = $siteGroups | Where-Object { $_.DisplayName -match 'Owner' }
-                $membersGroup = $siteGroups | Where-Object { $_.DisplayName -match 'Member' }
-
-                $owners = & $getGroupUsers $ownersGroup
-                $members = & $getGroupUsers $membersGroup
-            } catch {}
-
-            # Storage Metrics
-            $storageUsedGB = $null
-            $storageQuotaGB = $null
-            try {
-                $siteDrive = Invoke-MgGraphRequest -Method GET -Uri "/v1.0/sites/$($site.Id)/drive"
-                if ($siteDrive.quota -and $siteDrive.quota.used) {
-                    $storageUsedGB = [math]::Round($siteDrive.quota.used / 1GB, 2)
-                    $storageQuotaGB = [math]::Round($siteDrive.quota.total / 1GB, 2)
-                }
-            } catch {}
-
-            $siteAuditResults += [PSCustomObject]@{
-                SiteName         = $site.DisplayName
-                SiteId           = $site.Id
-                SiteUrl          = $siteUrl
-                SiteCollection   = $siteCollection
-                CreatedDate      = $createdDate
-                LastModifiedDate = $lastModifiedDate
-                OwnerCount       = $owners.Count
-                MemberCount      = $members.Count
-                StorageUsedGB    = $storageUsedGB
-                StorageQuotaGB   = $storageQuotaGB
-            }
-        } catch {
-            Write-Host "Error processing site $($site.DisplayName): $_" -ForegroundColor Red
-        }
-    }
-
-    # Export site audit to Excel
-    $excelFileSites = Join-Path $PSScriptRoot "Microsoft365_SiteAudit_$($tenantId.Substring(0,8))_$((Get-Date).ToString('yyyyMMdd_HHmmss')).xlsx"
-    try {
-        $siteAuditResults | Export-Excel -Path $excelFileSites -WorksheetName "Site Audit" -AutoSize -TableStyle Medium2
-        Write-Host "Site audit exported to Excel: $excelFileSites" -ForegroundColor Green
-    } catch {
-        Write-Host "Error exporting site audit to Excel: $_" -ForegroundColor Red
-    }
-
-    # --- Mailbox and Teams Audit ---
-    function Get-MailboxAudit {
-        $mailboxes = Get-MgUser -Filter "mail ne null" -All -ErrorAction SilentlyContinue
-        $mailboxAudit = @()
-        foreach ($mb in $mailboxes) {
-            $rules = @()
-            try {
-                $rules = Get-MgUserMailFolderMessageRule -UserId $mb.Id -MailFolderId 'inbox' -All -ErrorAction SilentlyContinue
-            } catch {}
-            $externalRedirect = $false
-            foreach ($rule in $rules) {
-                if ($rule.Actions.ForwardTo -or $rule.Actions.RedirectTo) {
-                    foreach ($fwd in ($rule.Actions.ForwardTo + $rule.Actions.RedirectTo)) {
-                        if ($fwd.EmailAddress -and $fwd.EmailAddress -notlike "*@yourdomain.com") {
-                            $externalRedirect = $true
-                        }
-                    }
-                }
-            }
-            $mailboxAudit += [PSCustomObject]@{
-                DisplayName = $mb.DisplayName
-                UserPrincipalName = $mb.UserPrincipalName
-                Mail = $mb.Mail
-                MailboxSizeMB = $null # Placeholder, requires Exchange Online PowerShell for accurate size
-                ExternalRedirect = $externalRedirect
-            }
-        }
-        return $mailboxAudit
-    }
-
-    function Get-TeamsAudit {
-        $teams = Get-MgTeam -All -ErrorAction SilentlyContinue
-        $teamsAudit = @()
-        foreach ($team in $teams) {
-            $members = Get-MgTeamMember -TeamId $team.Id -All -ErrorAction SilentlyContinue
-            $teamsAudit += [PSCustomObject]@{
-                TeamName = $team.DisplayName
-                TeamId = $team.Id
-                MemberCount = $members.Count
-                Owners = ($members | Where-Object { $_.Roles -contains 'owner' } | ForEach-Object { $_.DisplayName }) -join '; '
-            }
-        }
-        return $teamsAudit
-    }
-
-    $mailboxAudit = Get-MailboxAudit
-    $teamsAudit = Get-TeamsAudit
-
-    # Final Excel export (summary + mailbox + teams)
-    $excelFileName = Join-Path $PSScriptRoot "Microsoft365_Audit_Summary_$($tenantId.Substring(0,8))_$((Get-Date).ToString('yyyyMMdd_HHmmss')).xlsx"
-    $summary = [PSCustomObject]@{
-        TenantId              = $tenantId
-        ReportGeneratedDate   = Get-Date
-        TotalUsers            = $allUsers.Count
-        TotalGroups           = $allGroups.Count
-        TotalSites            = $allSites.Count
-        TotalFiles            = $null  # To be calculated
-        TotalFolders          = $null  # To be calculated
-        TotalMailboxAccounts  = $null  # To be calculated
-        TotalTeams            = $null  # To be calculated
-    }
-
-    # Calculate totals for files, folders, mailbox accounts, and teams
-    try {
-        $fileDataAllSites = @()
-        foreach ($site in $allSites) {
-            $fileData = Get-FileData -Site $site -Incremental -MaxDepth 1
-            $fileDataAllSites += $fileData.Files
-        }
-        $summary.TotalFiles = $fileDataAllSites.Count
-        $summary.TotalFolders = ($fileDataAllSites | Where-Object { $_.Folder }).Count
-    } catch {}
-
-    try {
-        $mailboxAuditData = Get-MailboxAudit
-        $summary.TotalMailboxAccounts = $mailboxAuditData.Count
-    } catch {}
-
-    try {
-        $teamsAuditData = Get-TeamsAudit
-        $summary.TotalTeams = $teamsAuditData.Count
-    } catch {}
-
-    # Create final summary Excel file
-    $excel = $summary | Export-Excel -Path $excelFileName -WorksheetName "Summary" -AutoSize -TableStyle Medium2 -PassThru
-    $top20Files        | Export-Excel -ExcelPackage $excel -WorksheetName "Top 20 Files"     -AutoSize -TableStyle Medium6
-    $top10Folders      | Export-Excel -ExcelPackage $excel -WorksheetName "Top 10 Folders"   -AutoSize -TableStyle Medium3
-    $storageBreakdown  | Export-Excel -ExcelPackage $excel -WorksheetName "Storage Breakdown" -AutoSize -TableStyle Medium4
-    $FolderAccess      | Export-Excel -ExcelPackage $excel -WorksheetName "Folder Access"    -AutoSize -TableStyle Medium5
-    $accessSummary     | Export-Excel -ExcelPackage $excel -WorksheetName "Access Summary"   -AutoSize -TableStyle Medium1
-    if ($recycleBinFiles.Count -gt 0) {
-        $recycleBinFiles | Export-Excel -ExcelPackage $excel -WorksheetName "Recycle Bin Top 10" -AutoSize -TableStyle Medium12
-    }
-    if ($recycleBinSize -gt 0) {
-        $recycleBinSummary = [PSCustomObject]@{
-            TotalRecycleBinSizeGB = [math]::Round($recycleBinSize / 1GB, 2)
-            TotalRecycleBinSizeMB = [math]::Round($recycleBinSize / 1MB, 2)
-            FileCount = $recycleBinFiles.Count
-        }
-        $recycleBinSummary | Export-Excel -ExcelPackage $excel -WorksheetName "Recycle Bin Summary" -AutoSize -TableStyle Medium13
-    }
-
-    # Add user/group access summary sheets
-    $userAccess = Get-SiteUserAccessSummary -Site $Site -FolderAccess $FolderAccess
-    if ($userAccess.Owners.Count -gt 0) {
-        $userAccess.Owners | Export-Excel -ExcelPackage $excel -WorksheetName "Owners Access" -AutoSize -TableStyle Medium7
-    }
-    if ($userAccess.Members.Count -gt 0) {
-        $userAccess.Members | Export-Excel -ExcelPackage $excel -WorksheetName "Members Access" -AutoSize -TableStyle Medium8
-    }
-    if ($userAccess.Guests.Count -gt 0) {
-        $userAccess.Guests | Export-Excel -ExcelPackage $excel -WorksheetName "Guests Access" -AutoSize -TableStyle Medium9
-    }
-    if ($userAccess.Externals.Count -gt 0) {
-        $userAccess.Externals | Export-Excel -ExcelPackage $excel -WorksheetName "External Access" -AutoSize -TableStyle Medium10
-    }
-
-    # Mailbox and Teams audit sheets
-    $mailboxAudit     | Export-Excel -ExcelPackage $excel -WorksheetName "MailboxAudit" -AutoSize -TableStyle Medium8
-    $teamsAudit       | Export-Excel -ExcelPackage $excel -WorksheetName "TeamsAudit" -AutoSize -TableStyle Medium9
-
-    # Find files with long path+name (>399 chars)
-    $longPathFiles = $FileData.Files | Where-Object {
-        $fullPath = (($_.Path -replace '^/drive/root:', '') + '/' + $_.Name).Trim('/').Replace('//','/')
-        $fullPath.Length -gt 399
-    } | ForEach-Object {
-        $fullPath = (($_.Path -replace '^/drive/root:', '') + '/' + $_.Name).Trim('/').Replace('//','/')
-        [PSCustomObject]@{
-            Name     = $_.Name
-            Path     = $_.Path
-            FullPath = $fullPath
-            Length   = $fullPath.Length
-            SizeMB   = $_.SizeMB
-        }
-    }
-    if ($longPathFiles.Count -gt 0) {
-        $longPathFiles | Export-Excel -ExcelPackage $excel -WorksheetName "Long Paths (>399 chars)" -AutoSize -TableStyle Medium11
-    }
-
-    # Add charts to the storage breakdown worksheet
-    $ws = $excel.Workbook.Worksheets["Storage Breakdown"]
-    $chart           = $ws.Drawings.AddChart("StorageChart", [OfficeOpenXml.Drawing.Chart.eChartType]::Pie)
-    $chart.Title.Text= "Storage Usage by Location"
-    $chart.SetPosition(1, 0, 7, 0)
-    $chart.SetSize(500, 400)
-    $series          = $chart.Series.Add($ws.Cells["C2:C$($storageBreakdown.Count + 1)"], $ws.Cells["A2:A$($storageBreakdown.Count + 1)"])
-    $series.Header   = "Size (GB)"
-
-    # Add additional summary info
-    $summaryStats = [PSCustomObject]@{
-        Owners_Count    = $userAccess.Owners.Count
-        Members_Count   = $userAccess.Members.Count
-        Guests_Count    = $userAccess.Guests.Count
-        Externals_Count = $userAccess.Externals.Count
-        OtherUsers_Count= ($FolderAccess | Group-Object UserEmail | Where-Object { $_.Name -and ($userAccess.Owners + $userAccess.Members + $userAccess.Guests + $userAccess.Externals | ForEach-Object { $_.UserEmail }) -notcontains $_.Name }).Count
-        LongPathFiles   = $longPathFiles.Count
-        LargestFile     = ($top20Files | Select-Object -First 1).Name
-        LargestFileSize = ($top20Files | Select-Object -First 1).SizeMB
-        LargestFolder   = ($top10Folders | Select-Object -First 1).FolderPath
-        LargestFolderSize = ($top10Folders | Select-Object -First 1).SizeGB
-        RecycleBinSizeGB = [math]::Round($recycleBinSize / 1GB, 2)
-        RecycleBinTopFile = ($recycleBinFiles | Select-Object -First 1).Name
-        RecycleBinTopFileSize = ($recycleBinFiles | Select-Object -First 1).SizeMB
-    }
-    $summaryStats | Export-Excel -ExcelPackage $excel -WorksheetName "Summary" -StartRow ($siteSummary.Count + 3) -AutoSize -TableStyle Medium13
-
-    # Add pie chart for top 10 folders to the Summary worksheet
-    $wsSummary = $excel.Workbook.Worksheets["Summary"]
-    $wsFolders = $excel.Workbook.Worksheets["Top 10 Folders"]
-    if ($wsFolders -and $wsSummary) {
-        $chart2 = $wsSummary.Drawings.AddChart("FoldersPieChart", [OfficeOpenXml.Drawing.Chart.eChartType]::Pie)
-        $chart2.Title.Text = "Top 10 Folders by Size (GB)"
-        $chart2.SetPosition($siteSummary.Count + 10, 0, 0, 0)
-        $chart2.SetSize(500, 400)
-        $series2 = $chart2.Series.Add($wsFolders.Cells["B2:B11"], $wsFolders.Cells["A2:A11"])
-        $series2.Header = "Size (GB)"
-    }
-
-    Close-ExcelPackage $excel
-
-    Write-Host "Audit complete! Review the exported Excel files for details." -ForegroundColor Green
-} catch {
-    Write-Host "Error in the unified audit script: $_" -ForegroundColor Red
 }
+Write-Progress -Activity 'Calendars' -Completed
+#endregion
+
+#region 11. Enterprise Applications (non-Microsoft)
+Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Status 'Processing Enterprise Applications...' -PercentComplete 80
+### Enterprise Apps tab: sort by DisplayName, output each assigned user on a separate row, and show app owners
+Write-Progress -Activity 'Enterprise Apps' -Status 'Querying service principals...' -PercentComplete 0
+$microsoftTenantId = 'f8cdef31-a31e-4b4a-93e4-5f571e91255a'
+$allSp = Get-MgServicePrincipal -All
+$filteredApps = $allSp | Where-Object {
+    $_.ServicePrincipalType -eq 'Application' -and
+    $_.AppOwnerOrganizationId -ne $microsoftTenantId -and
+    $_.DisplayName -notmatch '^Microsoft'
+}
+$appResults = @()
+$sortedApps = $filteredApps | Sort-Object DisplayName
+for ($i = 0; $i -lt $sortedApps.Count; $i++) {
+    $app = $sortedApps[$i]
+    $pct = [math]::Round((($i+1)/$sortedApps.Count)*100, 1)
+    Write-Progress -Activity 'Enterprise Apps' -Status "Processing app $($i+1) of $($sortedApps.Count): $($app.DisplayName)" -PercentComplete $pct
+    $assignedUsers = @()
+    $owners = @()
+    try {
+        $assignedUsers = Get-MgServicePrincipalAppRoleAssignedTo -ServicePrincipalId $app.Id -ErrorAction SilentlyContinue | ForEach-Object {
+            $_.PrincipalDisplayName
+        }
+    } catch {}
+    try {
+        $owners = Get-MgServicePrincipalOwner -ServicePrincipalId $app.Id -ErrorAction SilentlyContinue | ForEach-Object {
+            $_.DisplayName
+        }
+    } catch {}
+    if ($assignedUsers.Count -eq 0) {
+        $appResults += [PSCustomObject]@{
+            DisplayName   = $app.DisplayName
+            Homepage      = $app.Homepage
+            LoginUrl      = $app.LoginUrl
+            LogoutUrl     = $app.LogoutUrl
+            AssignedUser  = ''
+            AppOwner      = ($owners -join '; ')
+        }
+    } else {
+        foreach ($user in $assignedUsers) {
+            $appResults += [PSCustomObject]@{
+                DisplayName   = $app.DisplayName
+                Homepage      = $app.Homepage
+                LoginUrl      = $app.LoginUrl
+                LogoutUrl     = $app.LogoutUrl
+                AssignedUser  = $user
+                AppOwner      = ($owners -join '; ')
+            }
+        }
+    }
+}
+Write-Progress -Activity 'Enterprise Apps' -Status 'Completed' -PercentComplete 100
+Write-Progress -Activity 'Enterprise Apps' -Completed
+#endregion
+
+#region 12. Licenses, Domains, SummaryNotes
+Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Status 'Processing Licenses & Domains...' -PercentComplete 90
+$licenseSummary = @()
+for ($i = 0; $i -lt $licenses.Count; $i++) {
+    $lic = $licenses[$i]
+    $pct = [math]::Round((($i+1)/$licenses.Count)*100, 1)
+    Write-Progress -Activity 'Licenses' -Status "Processing license $($i+1) of $($licenses.Count): $($lic.SkuPartNumber)" -PercentComplete $pct
+    $used = $lic.ConsumedUnits
+    $total = $lic.PrepaidUnits.Enabled
+    $free = $total - $used
+    $licenseSummary += [PSCustomObject]@{
+        SkuPartNumber = $lic.SkuPartNumber
+        SkuName       = $lic.SkuPartNumber
+        Used          = $used
+        Free          = $free
+        Total         = $total
+    }
+}
+Write-Progress -Activity 'Licenses' -Status 'Completed' -PercentComplete 100
+
+Write-Progress -Activity 'Domains' -Status 'Starting...' -PercentComplete 0
+$allDomains = Get-MgDomain -All
+$totalDomains = $allDomains.Count
+$domainResults = @()
+for ($i = 0; $i -lt $allDomains.Count; $i++) {
+    $d = $allDomains[$i]
+    $pct = [math]::Round((($i+1)/$allDomains.Count)*100, 1)
+    Write-Progress -Activity 'Domains' -Status "Processing domain $($i+1) of $($allDomains.Count): $($d.Id)" -PercentComplete $pct
+    $domainResults += [PSCustomObject]@{
+        DomainName  = $d.Id
+        IsVerified  = $d.IsVerified
+        IsDefault   = $d.IsDefault
+    }
+}
+Write-Progress -Activity 'Domains' -Status 'Completed' -PercentComplete 100
+
+Write-Progress -Activity 'SummaryNotes' -Status 'Starting...' -PercentComplete 0
+$endTime = Get-Date
+$duration = $endTime - $global:AuditStats.StartTime
+$summaryNotes = @()
+$summaryNotes += [PSCustomObject]@{ Note = "Audit completed on $($endTime.ToString('yyyy-MM-dd HH:mm:ss')) by $($ctx.Account)" }
+$summaryNotes += [PSCustomObject]@{ Note = "Start Time: $($global:AuditStats.StartTime)" }
+$summaryNotes += [PSCustomObject]@{ Note = "End Time: $($endTime)" }
+$summaryNotes += [PSCustomObject]@{ Note = "Duration: $($duration.ToString('hh\:mm\:ss'))" }
+$summaryNotes += [PSCustomObject]@{ Note = "Users processed: $($global:AuditStats.UsersProcessed)" }
+$summaryNotes += [PSCustomObject]@{ Note = "Rules processed: $($global:AuditStats.RulesProcessed)" }
+$summaryNotes += [PSCustomObject]@{ Note = "Errors encountered: $($global:AuditStats.ErrorsEncountered)" }
+$summaryNotes += [PSCustomObject]@{ Note = "User+Mailbox count: $($userResults.Count)" }
+$summaryNotes += [PSCustomObject]@{ Note = "Group count: $($groupResults.Count)" }
+$summaryNotes += [PSCustomObject]@{ Note = "GroupMembers count: $($groupMemberResults.Count)" }
+$summaryNotes += [PSCustomObject]@{ Note = "MailboxRules count: $($mailboxRules.Count)" }
+$summaryNotes += [PSCustomObject]@{ Note = "DelegatedMailboxes count: $($delegatedMailboxes.Count)" }
+$summaryNotes += [PSCustomObject]@{ Note = "Calendars count: $($calendars.Count)" }
+$summaryNotes += [PSCustomObject]@{ Note = "EnterpriseApps count: $($appResults.Count)" }
+$summaryNotes += [PSCustomObject]@{ Note = "Licenses count: $($licenseSummary.Count)" }
+$summaryNotes += [PSCustomObject]@{ Note = "Domains count: $($domainResults.Count)" }
+Write-Progress -Activity 'SummaryNotes' -Status 'Completed' -PercentComplete 100
+#endregion
+
+#region 13. Export to Excel & Formatting
+
+Write-Host "Exporting results to Excel..."
+Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Status 'Exporting to Excel...' -PercentComplete 95
+
+$pkg = Open-ExcelPackage -Path $excelFile -Create
+
+if ($selectedUsers.Count -eq 1 -and $allUsers.Count -eq 1) {
+    # Single user: compile all info into one worksheet
+    $singleUser = $allUsers[0]
+    $singleTabData = @()
+    $singleTabData += [PSCustomObject]@{ Section = 'User'; Data = $userResults | ConvertTo-Json -Compress }
+    $singleTabData += [PSCustomObject]@{ Section = 'Groups'; Data = $groupResults | ConvertTo-Json -Compress }
+    $singleTabData += [PSCustomObject]@{ Section = 'GroupMembers'; Data = $groupMemberResults | ConvertTo-Json -Compress }
+    $singleTabData += [PSCustomObject]@{ Section = 'MailboxRules'; Data = $mailboxRules | ConvertTo-Json -Compress }
+    $singleTabData += [PSCustomObject]@{ Section = 'DelegatedMailboxes'; Data = $delegatedMailboxes | ConvertTo-Json -Compress }
+    $singleTabData += [PSCustomObject]@{ Section = 'Calendars'; Data = $calendars | ConvertTo-Json -Compress }
+    $singleTabData += [PSCustomObject]@{ Section = 'EnterpriseApps'; Data = $appResults | ConvertTo-Json -Compress }
+    $singleTabData += [PSCustomObject]@{ Section = 'Licenses'; Data = $licenseSummary | ConvertTo-Json -Compress }
+    $singleTabData += [PSCustomObject]@{ Section = 'Domains'; Data = $domainResults | ConvertTo-Json -Compress }
+    $singleTabData += [PSCustomObject]@{ Section = 'SummaryNotes'; Data = $summaryNotes | ConvertTo-Json -Compress }
+    $pkg = $singleTabData | Export-Excel -ExcelPackage $pkg -WorksheetName "User_$($singleUser.UserPrincipalName)" -TableStyle "Medium1" -AutoSize -AutoFilter -BoldTopRow -PassThru
+    Close-ExcelPackage $pkg -Show
+    Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Completed
+    return
+}
+
+
+# If multiple users selected in option 2, create a worksheet per user with only their data
+if ($selectedUsers.Count -gt 1 -and $allUsers.Count -gt 1) {
+    $worksheetCounter = 1
+    foreach ($u in $allUsers) {
+        $userUpn = $u.UserPrincipalName
+        $userTabData = [ordered]@{
+            'User'              = $userResults | Where-Object { $_.UserPrincipalName -eq $userUpn }
+            'Groups'            = $groupResults | Where-Object { ($groupMemberResults | Where-Object { $_.MemberUPN -eq $userUpn }).GroupName -contains $_.GroupName }
+            'GroupMembers'      = $groupMemberResults | Where-Object { $_.MemberUPN -eq $userUpn }
+            'MailboxRules'      = $mailboxRules | Where-Object { $_.MailboxOwner -eq $userUpn }
+            'DelegatedMailboxes'= $delegatedMailboxes | Where-Object { $_.MailboxOwner -eq $userUpn -or $_.DelegateUser -eq $userUpn }
+            'Calendars'         = $calendars | Where-Object { $_.CalendarOwner -eq $userUpn }
+            'EnterpriseApps'    = $appResults | Where-Object { $_.AssignedUser -eq $userUpn }
+            'Licenses'          = $licenseSummary # Licenses are tenant-wide, include all
+            'Domains'           = $domainResults  # Domains are tenant-wide, include all
+            'SummaryNotes'      = $summaryNotes   # Summary is tenant-wide, include all
+        }
+        # Create a copy of keys before iteration
+        $tabKeys = @($userTabData.Keys)
+        foreach ($tab in $tabKeys) {
+            if (-not $userTabData[$tab] -or $userTabData[$tab].Count -eq 0) {
+                $userTabData[$tab] = @([PSCustomObject]@{ Info = 'No data found' })
+            }
+        }
+        # Generate a short, unique identifier for the user
+        $shortName = $u.DisplayName.Split(' ')[0] + $worksheetCounter.ToString()
+        
+        # Process each data section one at a time
+        foreach ($entry in $userTabData.GetEnumerator()) {
+            # Keep worksheet names short and simple
+            $wsName = "$shortName-$($entry.Key)"
+            if ($wsName.Length -gt 31) { # Excel worksheet name length limit
+                $wsName = $wsName.Substring(0, 31)
+            }
+            
+            # Export the data to Excel
+            $pkg = $entry.Value | Export-Excel -ExcelPackage $pkg -WorksheetName $wsName `
+                -TableStyle ("Medium$($worksheetCounter % 21 + 1)") -AutoSize -AutoFilter -BoldTopRow -PassThru
+        }
+        $worksheetCounter++
+    }
+    Close-ExcelPackage $pkg -Show
+    Write-Progress -Activity 'Processing Microsoft 365 Tenant' -Completed
+    return
+}
+
+# Usual multi-tab export for all/multiple users (all users or option 1)
+# Define the data sets and export order
+$orderedDataSets = [ordered]@{
+    'Users'                   = $userResults
+    'Groups'                  = $groupResults
+    'GroupMembers'            = $groupMemberResults
+    'MailboxRules'            = $mailboxRules
+    'DelegatedMailboxes'      = $delegatedMailboxes
+    'Calendars'               = $calendars
+    'EnterpriseApps'          = $appResults
+    'Licenses'                = $licenseSummary
+    'Domains'                 = $domainResults
+    'SummaryNotes'            = $summaryNotes
+}
+
+# Add 'No data found' to any empty tab
+$dataSetKeys = @($orderedDataSets.Keys)
+foreach ($k in $dataSetKeys) {
+    if (-not $orderedDataSets[$k] -or $orderedDataSets[$k].Count -eq 0) {
+        $orderedDataSets[$k] = @([PSCustomObject]@{ Info = 'No data found' })
+    }
+}
+
+# Export each worksheet
+$worksheetCounter = 1
+foreach ($name in $orderedDataSets.Keys) {
+    $pct = [math]::Round((($worksheetCounter)/$orderedDataSets.Keys.Count)*100, 1)
+    Write-Progress -Activity 'Export to Excel & Formatting' -Status "Exporting worksheet $worksheetCounter of $($orderedDataSets.Keys.Count): $name" -PercentComplete $pct
+    
+    # Create a new worksheet for each data set
+    try {
+        $pkg = $orderedDataSets[$name] | Export-Excel -ExcelPackage $pkg -WorksheetName $name `
+            -TableStyle "Medium$($worksheetCounter % 21 + 1)" -AutoSize -AutoFilter -BoldTopRow -PassThru
+    }
+    catch {
+        Write-Warning "Error exporting worksheet '$name': $($_.Exception.Message)"
+        continue
+    }
+    $worksheetCounter++
+}
+
+# Custom formatting for Groups worksheet: remove duplicate group type headings and extra rows
+if ($pkg.Workbook.Worksheets['Groups']) {
+    $wsG = $pkg.Workbook.Worksheets['Groups']
+    $wsG.Cells.AutoFitColumns()
+}
+
+# Highlight owners in GroupMembers
+if ($pkg.Workbook.Worksheets['GroupMembers']) {
+    $wsGM = $pkg.Workbook.Worksheets['GroupMembers']
+    for ($i = 2; $i -le $wsGM.Dimension.End.Row; $i++) {
+        $isOwner = $wsGM.Cells[$i, 5].Text -eq 'True'
+        $color = if ($isOwner) { [System.Drawing.Color]::LightYellow } else { [System.Drawing.Color]::White }
+        $wsGM.Row($i).Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+        $wsGM.Row($i).Style.Fill.BackgroundColor.SetColor($color)
+    }
+}
+
+# Format mailbox sizes in Users sheet (where mailbox data is stored)
+if ($pkg.Workbook.Worksheets['Users']) {
+    $wsU = $pkg.Workbook.Worksheets['Users']
+    
+    # Find the column indices for MailboxSizeGB and ArchiveSizeGB
+    $columnHeaders = 1..$wsU.Dimension.End.Column | ForEach-Object {
+        [PSCustomObject]@{
+            Index = $_
+            Name = $wsU.Cells[1,$_].Text
+        }
+    }
+    
+    $mailboxSizeCol = ($columnHeaders | Where-Object { $_.Name -eq 'MailboxSizeGB' }).Index
+    $archiveSizeCol = ($columnHeaders | Where-Object { $_.Name -eq 'ArchiveSizeGB' }).Index
+    
+    if ($mailboxSizeCol) {
+        Write-Host "Formatting mailbox size column $mailboxSizeCol"
+        $wsU.Column($mailboxSizeCol).Style.Numberformat.Format = "#,##0.00"
+        # Ensure numeric values
+        2..$wsU.Dimension.End.Row | ForEach-Object {
+            $cell = $wsU.Cells[$_, $mailboxSizeCol]
+            $originalValue = $cell.Value
+            if ($null -ne $originalValue -and $originalValue -ne '') {
+                try {
+                    $numericValue = [double]$originalValue
+                    $cell.Value = $numericValue
+                    Write-Host "Row ${_}: Converted $originalValue to $numericValue"
+                } catch {
+                    Write-Warning "Failed to convert value '$originalValue' to number in row ${_}"
+                }
+            }
+        }
+    }
+    if ($archiveSizeCol) {
+        Write-Host "Formatting archive size column $archiveSizeCol"
+        $wsU.Column($archiveSizeCol).Style.Numberformat.Format = "#,##0.00"
+        # Ensure numeric values
+        2..$wsU.Dimension.End.Row | ForEach-Object {
+            $cell = $wsU.Cells[$_, $archiveSizeCol]
+            $originalValue = $cell.Value
+            if ($null -ne $originalValue -and $originalValue -ne '') {
+                try {
+                    $numericValue = [double]$originalValue
+                    $cell.Value = $numericValue
+                    Write-Host "Row ${_}: Converted $originalValue to $numericValue"
+                } catch {
+                    Write-Warning "Failed to convert value '$originalValue' to number in row ${_}"
+                }
+            }
+        }
+    }
+    
+    $wsU.Cells.AutoFitColumns()
+}
+
+Close-ExcelPackage $pkg -Show
+Write-Progress -Activity 'Export to Excel & Formatting' -Status 'Completed' -PercentComplete 100
+#endregion
+
+#region 14. Cleanup
+Write-Progress -Activity 'Cleanup' -Status 'Cleaning up...' -PercentComplete 0
+try {
+    Disconnect-MgGraph -ErrorAction SilentlyContinue
+    Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+} catch {
+    # Ignore cleanup errors
+}
+Write-Progress -Activity 'Cleanup' -Completed
+
+# Print summary after cleanup
+# Detailed audit summary output
+$endTime = Get-Date
+$duration = $endTime - $global:AuditStats.StartTime
+Write-Host ("`nAudit complete. Results saved to $excelFile")
+Write-Host ("Duration: $($duration.ToString('hh\:mm\:ss'))")
+Write-Host ("Users processed: $($global:AuditStats.UsersProcessed)")
+Write-Host ("Rules processed: $($global:AuditStats.RulesProcessed)")
+Write-Host ("Errors encountered: $($global:AuditStats.ErrorsEncountered)")
+Write-Host ("User+Mailbox count: $($userResults.Count)")
+Write-Host ("Group count: $($groupResults.Count)")
+Write-Host ("GroupMembers count: $($groupMemberResults.Count)")
+Write-Host ("MailboxRules count: $($mailboxRules.Count)")
+Write-Host ("DelegatedMailboxes count: $($delegatedMailboxes.Count)")
+Write-Host ("Calendars count: $($calendars.Count)")
+Write-Host ("EnterpriseApps count: $($appResults.Count)")
+Write-Host ("Licenses count: $($licenseSummary.Count)")
+Write-Host ("Domains count: $($domainResults.Count)")
+#endregion
