@@ -18,7 +18,7 @@ $WarningPreference     = "SilentlyContinue"
 $clientId              = '278b9af9-888d-4344-93bb-769bdd739249'
 $tenantId              = 'ca0711e2-e703-4f4e-9099-17d97863211c'
 $siteUrl               = 'https://fbaint.sharepoint.com/sites/Marketing'
-$certificateThumbprint = 'B0AF0EF7659EA83D3140844F4BF89CCBB9413DBA'
+$certificateThumbprint = '2E2502BB1EDB8F36CF9DE50936B283BDD22D5BAD'
 
 #--- Required Modules ---
 $requiredModules = @(
@@ -656,12 +656,18 @@ function New-ExcelReport {
     $wsSummary = $excel.Workbook.Worksheets["Summary"]
     $wsFolders = $excel.Workbook.Worksheets["Top 10 Folders"]
     if ($wsFolders -and $wsSummary) {
-        $chart2 = $wsSummary.Drawings.AddChart("FoldersPieChart", [OfficeOpenXml.Drawing.Chart.eChartType]::Pie)
-        $chart2.Title.Text = "Top 10 Folders by Size (GB)"
-        $chart2.SetPosition($siteSummary.Count + 10, 0, 0, 0)
-        $chart2.SetSize(500, 400)
-        $series2 = $chart2.Series.Add($wsFolders.Cells["B2:B11"], $wsFolders.Cells["A2:A11"])
-        $series2.Header = "Size (GB)"
+        try {
+            $chart2 = $wsSummary.Drawings.AddChart("FoldersPieChart", [OfficeOpenXml.Drawing.Chart.eChartType]::Pie)
+            $chart2.Title.Text = "Top 10 Folders by Size (GB)"
+            $chart2.SetPosition($siteSummary.Count + 10, 0, 0, 0)
+            $chart2.SetSize(500, 400)
+            $series2 = $chart2.Series.Add($wsFolders.Cells["B2:B11"], $wsFolders.Cells["A2:A11"])
+            $series2.Header = "Size (GB)"
+        } catch {
+            Write-Host "Warning: Could not add pie chart for Top 10 Folders - $_" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "Warning: Could not get worksheet Top 10 Folders. Pie chart not added to Summary." -ForegroundColor Yellow
     }
 
     Close-ExcelPackage $excel
@@ -783,7 +789,7 @@ function Get-CalendarPermissionsForUser {
         $permissions = Get-MailboxFolderPermission -Identity $calendarPath
         return $permissions
     } catch {
-        Write-Host "Failed to retrieve calendar permissions for $CalendarEmail: $_" -ForegroundColor Red
+        Write-Host "Failed to retrieve calendar permissions for ${CalendarEmail}: $_" -ForegroundColor Red
         return $null
     }
 }
