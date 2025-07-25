@@ -27,7 +27,7 @@ $WarningPreference = "SilentlyContinue"
 $clientId     = '278b9af9-888d-4344-93bb-769bdd739249'
 $tenantId     = 'ca0711e2-e703-4f4e-9099-17d97863211c'
 # $siteUrl      = 'https://fbaint.sharepoint.com/sites/Marketing'  # No longer needed, script scans all sites
-$certificateThumbprint = 'B0AF0EF7659EA83D3140844F4BF89CCBB9413DBA'
+$certificateThumbprint = '2E2502BB1EDB8F36CF9DE50936B283BDD22D5BAD'
 
 # Install required modules if missing
 if (-not (Get-Module -Name Microsoft.Graph -ListAvailable)) {
