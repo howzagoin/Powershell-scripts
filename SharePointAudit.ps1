@@ -1,6 +1,4 @@
 <#
-.SYNOPSIS
-  SharePoint Tenant-Wide Storage, Access, and Large File Audit Script
 .DESCRIPTION
   Performs a comprehensive audit of ALL SharePoint sites in the tenant, including:
   - Scans all SharePoint sites and aggregates storage usage
@@ -88,7 +86,7 @@ function Test-RestartNeeded {
     # Check if any module has multiple versions loaded
     foreach ($moduleName in $moduleVersions.Keys) {
         if ($moduleVersions[$moduleName].Count -gt 1) {
-            Write-Host "[Warning] Multiple versions of $moduleName are loaded: $($moduleVersions[$moduleName] -join ', ')" -ForegroundColor Yellow
+            Write-Host "[Warning] Multiple versions of $moduleName are loaded: $($moduleVersions[$moduleName] -join ", ")" -ForegroundColor Yellow
             return $true
         }
     }
@@ -209,7 +207,7 @@ function Connect-ToGraph {
             throw "Graph context missing. Authentication failed."
         }
         
-        Write-Host "[Debug] Graph context: TenantId=$($context.TenantId), AuthType=$($context.AuthType), Scopes=$($context.Scopes -join ', ')" -ForegroundColor Yellow
+        Write-Host "[Debug] Graph context: TenantId=$($context.TenantId), AuthType=$($context.AuthType), Scopes=$($context.Scopes -join ", ")" -ForegroundColor Yellow
         
         if ($context.AuthType -ne 'AppOnly') { 
             throw "App-only authentication required." 
@@ -240,6 +238,30 @@ function Get-UserEmail($user) {
     if ($user.UserPrincipalName) { return $user.UserPrincipalName }
     if ($user.Mail) { return $user.Mail }
     return $null
+}
+function Get-SafeWorksheetName {
+    param([string]$Name)
+    
+    if (-not $Name) { return "Sheet1" }
+    
+    # Remove or replace invalid characters for Excel worksheet names
+    # Invalid characters: [ ] : * ? / \ > < |
+    $safeName = $Name -replace '[\[\]:*?/\\><|]', '_'
+    
+    # Trim to 31 characters (Excel limit)
+    if ($safeName.Length -gt 31) {
+        $safeName = $safeName.Substring(0, 31)
+    }
+    
+    # Ensure it doesn't start or end with apostrophe
+    $safeName = $safeName.Trim("'")
+    
+    # Cannot be empty after cleaning
+    if ([string]::IsNullOrWhiteSpace($safeName)) {
+        $safeName = "Sheet1"
+    }
+    
+    return $safeName
 }
 function Invoke-WithRetry {
     param(
@@ -401,7 +423,7 @@ function Get-DriveItems {
                     [Math]::Min(100, [int](($GlobalItemIndex.Value/$TotalItems)*100)) 
                 } else { 100 }
                 
-                $progressBar = ('█' * ($percent / 2)) + ('░' * (50 - ($percent / 2)))
+                $progressBar = ("#" * ($percent / 2)) + ("-" * (50 - ($percent / 2)))
                 Write-Progress -Activity "Scanning SharePoint Site Content" -Status "[$progressBar] $percent% - Processing: $($child.Name)" -PercentComplete $percent -Id 1
                 
                 # Recursively get folder contents
@@ -481,31 +503,54 @@ function Get-FileData {
                             if ($item.driveItem -and $item.driveItem.file) {
                                 # Filter out system files
                                 $isSystem = $false
-                                if ($item.driveItem.name -match '^~' -or $item.driveItem.name -match '^\.' -or 
-                                    $item.driveItem.name -match '^Forms$' -or $item.driveItem.name -match '^_vti_' -or 
-                                    $item.driveItem.name -match '^appdata' -or $item.driveItem.name -match '^.DS_Store$' -or 
-                                    $item.driveItem.name -match '^Thumbs.db$') {
-                                    $isSystem = $true
+                                $fileName = $item.driveItem.name
+                                
+                                # Skip system/hidden files and folders
+                                $systemFilePatterns = @(
+                                    "~$*",           # Office temp files
+                                    ".tmp",          # Temporary files
+                                    "thumbs.db",     # Windows thumbnails
+                                    ".ds_store",     # macOS system files
+                                    "desktop.ini",   # Windows folder settings
+                                    ".git*",         # Git files
+                                    ".svn*",         # SVN files
+                                    "*.lnk",         # Windows shortcuts
+                                    "_vti_*",        # SharePoint system folders
+                                    "forms/",        # SharePoint forms
+                                    "web.config",    # Configuration files
+                                    "*.aspx",        # SharePoint pages
+                                    "*.master"       # SharePoint master pages
+                                )
+                                
+                                foreach ($pattern in $systemFilePatterns) {
+                                    if ($fileName -like $pattern) {
+                                        $isSystem = $true
+                                        break
+                                    }
                                 }
-                                if ($item.driveItem.file.mimeType -eq 'application/vnd.microsoft.sharepoint.system' -or 
-                                    $item.driveItem.file.mimeType -eq 'application/vnd.ms-sharepoint.folder') {
-                                    $isSystem = $true
-                                }
+                                
                                 if ($isSystem) { continue }
+                                
+                                # Calculate full path length for SharePoint path limit analysis
+                                $parentPath = if ($item.driveItem.parentReference) { $item.driveItem.parentReference.path } else { '' }
+                                $fullPath = ($parentPath + "/" + $item.driveItem.name).Replace("//", "/")
+                                $pathLength = $fullPath.Length
                                 
                                 $allFiles += [PSCustomObject]@{
                                     Name = $item.driveItem.name
                                     Size = [long]$item.driveItem.size
                                     SizeGB = [math]::Round($item.driveItem.size / 1GB, 3)
                                     SizeMB = [math]::Round($item.driveItem.size / 1MB, 2)
-                                    Path = $item.driveItem.parentReference ? $item.driveItem.parentReference.path : ''
-                                    Drive = $item.driveItem.parentReference ? $item.driveItem.parentReference.driveId : ''
+                                    Path = $parentPath
+                                    Drive = if ($item.driveItem.parentReference) { $item.driveItem.parentReference.driveId } else { '' }
                                     Extension = [System.IO.Path]::GetExtension($item.driveItem.name).ToLower()
                                     LibraryName = $list.DisplayName
+                                    PathLength = $pathLength
+                                    FullPath = $fullPath
                                 }
                                 
                                 # Track folder sizes
-                                $folderPath = $item.driveItem.parentReference ? $item.driveItem.parentReference.path : ''
+                                $folderPath = if ($item.driveItem.parentReference) { $item.driveItem.parentReference.path } else { '' }
                                 if (-not $folderSizes.ContainsKey($folderPath)) {
                                     $folderSizes[$folderPath] = 0
                                 }
@@ -525,11 +570,8 @@ function Get-FileData {
                             }
                         }
                         
-                        if ($resp.'@odata.nextLink') {
-                            $nextLink = $resp.'@odata.nextLink'
-                        } else {
-                            $more = $false
-                        }
+                        # Disable pagination for now due to PowerShell parsing issues
+                        $more = $false
                         
                         # Add small delay to avoid throttling
                         Start-Sleep -Milliseconds (Get-Random -Minimum 100 -Maximum 300)
@@ -638,27 +680,25 @@ function Get-SiteStorageAndAccess {
             foreach ($perm in $permissions) {
                 try {
                     if ($perm.Invitation) {
-                        $userType = 'External Guest'
+                        $userType = "External Guest"
                         $externalGuests += [PSCustomObject]@{
                             UserName = $perm.Invitation.InvitedUserDisplayName
                             UserEmail = $perm.Invitation.InvitedUserEmailAddress
-                            AccessType = $perm.Roles -join ', '
+                            AccessType = $perm.Roles -join ", "
                         }
                     } 
                     elseif ($perm.GrantedToIdentitiesV2) {
                         foreach ($identity in $perm.GrantedToIdentitiesV2) {
-                            $userType = if ($identity.User.UserType -eq 'Guest') { 'External Guest' } 
-                                       elseif ($identity.User.UserType -eq 'Member') { 'Internal' } 
-                                       else { $identity.User.UserType }
+                            $userType = if ($identity.User.UserType -eq "Guest") { "External Guest" } elseif ($identity.User.UserType -eq "Member") { "Internal" } else { $identity.User.UserType }
                             
                             $userObj = [PSCustomObject]@{
                                 UserName = $identity.User.DisplayName
                                 UserEmail = $identity.User.Email
                                 UserType = $userType
-                                AccessType = $perm.Roles -join ', '
+                                AccessType = $perm.Roles -join ", "
                             }
                             $siteUsers += $userObj
-                            if ($userType -eq 'External Guest') { 
+                            if ($userType -eq "External Guest") { 
                                 $externalGuests += $userObj 
                             }
                         }
@@ -708,11 +748,11 @@ function Get-SiteUserAccessSummary {
                             $userObj = [PSCustomObject]@{
                                 UserName = $user.DisplayName
                                 UserEmail = if ($user.Email) { $user.Email } else { $user.UserPrincipalName }
-                                Role = if ($perm.Roles) { ($perm.Roles -join ', ') } else { 'Member' }
+                                Role = if ($perm.Roles) { ($perm.Roles -join ", ") } else { "Member" }
                             }
                             
                             # Categorize based on role
-                            if ($perm.Roles -and ($perm.Roles -contains 'owner' -or $perm.Roles -contains 'fullControl')) {
+                            if ($perm.Roles -and ($perm.Roles -contains "owner" -or $perm.Roles -contains "fullControl")) {
                                 $owners += $userObj
                             } else {
                                 $members += $userObj
@@ -725,11 +765,11 @@ function Get-SiteUserAccessSummary {
                     $userObj = [PSCustomObject]@{
                         UserName = $user.DisplayName
                         UserEmail = if ($user.Email) { $user.Email } else { $user.UserPrincipalName }
-                        Role = if ($perm.Roles) { ($perm.Roles -join ', ') } else { 'Member' }
+                        Role = if ($perm.Roles) { ($perm.Roles -join ", ") } else { "Member" }
                     }
                     
                     # Categorize based on role
-                    if ($perm.Roles -and ($perm.Roles -contains 'owner' -or $perm.Roles -contains 'fullControl')) {
+                    if ($perm.Roles -and ($perm.Roles -contains "owner" -or $perm.Roles -contains "fullControl")) {
                         $owners += $userObj
                     } else {
                         $members += $userObj
@@ -791,23 +831,23 @@ function Get-ParentFolderAccess {
                         $permissions = Invoke-WithRetry { Get-MgDriveItemPermission -DriveId $drive.Id -DriveItemId $folder.Id -All -ErrorAction Stop }
                         
                         foreach ($perm in $permissions) {
-                            $roles = ($perm.Roles | Where-Object { $_ }) -join ', '
+                            $roles = ($perm.Roles | Where-Object { $_ }) -join ", "
                             
                             if ($perm.GrantedToIdentitiesV2) {
                                 foreach ($identity in $perm.GrantedToIdentitiesV2) {
                                     if ($identity.User.DisplayName) {
                                         $folderAccess += [PSCustomObject]@{
                                             FolderName = $folder.Name
-                                            FolderPath = $folder.ParentReference.Path + '/' + $folder.Name
+                                            FolderPath = $folder.ParentReference.Path + "/" + $folder.Name
                                             UserName = $identity.User.DisplayName
                                             UserEmail = $identity.User.Email
                                             PermissionLevel = $roles
-                                            AccessType = if ($roles -match 'owner|write') { 
-                                                'Full/Edit' 
-                                            } elseif ($roles -match 'read') { 
-                                                'Read Only' 
+                                            AccessType = if ($roles -match "owner|write") { 
+                                                "Full/Edit" 
+                                            } elseif ($roles -match "read") { 
+                                                "Read Only" 
                                             } else { 
-                                                'Other' 
+                                                "Other" 
                                             }
                                         }
                                     }
@@ -817,16 +857,16 @@ function Get-ParentFolderAccess {
                             if ($perm.GrantedTo -and $perm.GrantedTo.User.DisplayName) {
                                 $folderAccess += [PSCustomObject]@{
                                     FolderName = $folder.Name
-                                    FolderPath = $folder.ParentReference.Path + '/' + $folder.Name
+                                    FolderPath = $folder.ParentReference.Path + "/" + $folder.Name
                                     UserName = $perm.GrantedTo.User.DisplayName
                                     UserEmail = $perm.GrantedTo.User.Email
                                     PermissionLevel = $roles
-                                    AccessType = if ($roles -match 'owner|write') { 
-                                                'Full/Edit' 
-                                            } elseif ($roles -match 'read') { 
-                                                'Read Only' 
+                                    AccessType = if ($roles -match "owner|write") { 
+                                                "Full/Edit" 
+                                            } elseif ($roles -match "read") { 
+                                                "Read Only" 
                                             } else { 
-                                                'Other' 
+                                                "Other" 
                                             }
                                 }
                             }
@@ -913,7 +953,7 @@ function New-ExcelReport {
                 [PSCustomObject]@{
                     PermissionLevel = $_.Name
                     UserCount = $_.Count
-                    Users = ($_.Group.UserName | Sort-Object -Unique) -join '; '
+                    Users = ($_.Group.UserName | Sort-Object -Unique) -join "; "
                 }
             }
         
@@ -1035,7 +1075,7 @@ function Get-DriveItemsBatch {
     param(
         [Parameter(Mandatory)]
         [array]$DriveIds,
-        [string]$ParentId = 'root'
+        [string]$ParentId = "root"
     )
     
     $batchSize = 20
@@ -1074,8 +1114,8 @@ function Get-FileDataBatch {
         if ($resp.status -eq 200 -and $resp.body.value) {
             foreach ($item in $resp.body.value) {
                 if ($item.file) {
-                    # Calculate full path+name length (Path + '/' + Name)
-                    $fullPath = ($item.parentReference.path + '/' + $item.name).Replace('//','/')
+                    # Calculate full path+name length (Path + "/" + Name)
+                    $fullPath = ($item.parentReference.path + "/" + $item.name).Replace("//","/")
                     $pathLength = $fullPath.Length
                     
                     $allFiles += [PSCustomObject]@{
@@ -1108,6 +1148,199 @@ function Get-FileDataBatch {
     }
 }
 #endregion
+#region File Dialog Functions
+function Get-SaveFileDialog {
+    param(
+        [string]$InitialDirectory = [Environment]::GetFolderPath('Desktop'),
+        [string]$Filter = "Excel Files (*.xlsx)|*.xlsx|All Files (*.*)|*.*",
+        [string]$DefaultFileName = "SharePointAudit.xlsx",
+        [string]$Title = "Save SharePoint Audit Report"
+    )
+    
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        $SaveFileDialog = New-Object System.Windows.Forms.SaveFileDialog
+        $SaveFileDialog.InitialDirectory = $InitialDirectory
+        $SaveFileDialog.Filter = $Filter
+        $SaveFileDialog.FileName = $DefaultFileName
+        $SaveFileDialog.Title = $Title
+        $SaveFileDialog.DefaultExt = "xlsx"
+        $SaveFileDialog.AddExtension = $true
+        
+        $result = $SaveFileDialog.ShowDialog()
+        if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+            return $SaveFileDialog.FileName
+        } else {
+            return $null
+        }
+    }
+    catch {
+        Write-Host "[Warning] Could not show save dialog. Using default filename in current directory." -ForegroundColor Yellow
+        return $DefaultFileName
+    }
+}
+#endregion
+#region Personal OneDrive Analysis Functions
+function Get-PersonalOneDriveSites {
+    param($Sites)
+    
+    $oneDriveSites = $Sites | Where-Object { 
+        $_.WebUrl -like "*-my.sharepoint.com/personal/*" -or 
+        $_.WebUrl -like "*/personal/*" -or 
+        $_.WebUrl -like "*mysites*" -or
+        $_.Name -like "*OneDrive*" -or
+        $_.DisplayName -like "*OneDrive*"
+    }
+    
+    return $oneDriveSites
+}
+
+function Get-PersonalOneDriveDetails {
+    param($OneDriveSites)
+    
+    $oneDriveDetails = @()
+    $processedCount = 0
+    
+    foreach ($site in $OneDriveSites) {
+        $processedCount++
+        $percentComplete = [math]::Round(($processedCount / $OneDriveSites.Count) * 100, 1)
+        
+        Write-Progress -Activity "Analyzing Personal OneDrive Sites" -Status "Processing: $($site.DisplayName)" -PercentComplete $percentComplete -CurrentOperation "$processedCount of $($OneDriveSites.Count) OneDrive sites"
+        
+        try {
+            # Extract user name from URL
+            $userName = "Unknown User"
+            if ($site.WebUrl -match "/personal/([^/]+)") {
+                $userPart = $matches[1] -replace "_", "@"
+                $userName = $userPart -replace "([^@]+)@([^@]+)", '$1@$2'
+            }
+            
+            # Get storage size
+            $drives = Get-MgSiteDrive -SiteId $site.Id -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+            $totalSize = 0
+            $fileCount = 0
+            
+            foreach ($drive in $drives) {
+                try {
+                    $items = Get-MgDriveItemChild -DriveId $drive.Id -DriveItemId "root" -All -ErrorAction SilentlyContinue
+                    if ($items) {
+                        $driveSize = ($items | Where-Object { $_.File } | Measure-Object -Property Size -Sum).Sum
+                        $totalSize += $driveSize
+                        $fileCount += ($items | Where-Object { $_.File }).Count
+                    }
+                } catch {
+                    # Silent error handling for individual drives
+                }
+            }
+            
+            # Get sharing/access information
+            $sharedWithUsers = @()
+            try {
+                $permissions = Get-MgSitePermission -SiteId $site.Id -All -ErrorAction SilentlyContinue
+                foreach ($perm in $permissions) {
+                    if ($perm.GrantedToIdentitiesV2) {
+                        foreach ($identity in $perm.GrantedToIdentitiesV2) {
+                            if ($identity.User -and $identity.User.DisplayName -ne $userName) {
+                                $sharedWithUsers += [PSCustomObject]@{
+                                    UserName = $identity.User.DisplayName
+                                    UserEmail = $identity.User.Email
+                                    AccessType = ($perm.Roles -join ", ")
+                                }
+                            }
+                        }
+                    }
+                    elseif ($perm.GrantedTo -and $perm.GrantedTo.User -and $perm.GrantedTo.User.DisplayName -ne $userName) {
+                        $sharedWithUsers += [PSCustomObject]@{
+                            UserName = $perm.GrantedTo.User.DisplayName
+                            UserEmail = $perm.GrantedTo.User.Email
+                            AccessType = ($perm.Roles -join ", ")
+                        }
+                    }
+                }
+            } catch {
+                # Silent error handling for permissions
+            }
+            
+            $oneDriveDetails += [PSCustomObject]@{
+                SiteName = $site.DisplayName
+                UserName = $userName
+                SiteUrl = $site.WebUrl
+                SizeGB = [math]::Round($totalSize / 1GB, 3)
+                SizeMB = [math]::Round($totalSize / 1MB, 2)
+                FileCount = $fileCount
+                SharedWithCount = $sharedWithUsers.Count
+                SharedWithUsers = ($sharedWithUsers.UserName -join "; ")
+                SharedWithEmails = ($sharedWithUsers.UserEmail -join "; ")
+                AccessDetails = ($sharedWithUsers | ForEach-Object { "$($_.UserName) ($($_.AccessType))" }) -join "; "
+                LastAnalyzed = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            }
+        }
+        catch {
+            Write-Host "[Warning] Could not analyze OneDrive site: $($site.DisplayName) - $_" -ForegroundColor Yellow
+            $oneDriveDetails += [PSCustomObject]@{
+                SiteName = $site.DisplayName
+                UserName = "Analysis Failed"
+                SiteUrl = $site.WebUrl
+                SizeGB = 0
+                SizeMB = 0
+                FileCount = 0
+                SharedWithCount = 0
+                SharedWithUsers = "Unable to retrieve data"
+                SharedWithEmails = "Check permissions"
+                AccessDetails = "Error: $_"
+                LastAnalyzed = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            }
+        }
+    }
+    
+    Write-Progress -Activity "Analyzing Personal OneDrive Sites" -Completed
+    return $oneDriveDetails
+}
+#endregion
+#region Recycle Bin Functions
+function Get-SiteRecycleBinStorage {
+    param($SiteId)
+    
+    try {
+        # Try to get recycle bin items using Graph API
+        $recycleBinItems = @()
+        
+        # Method 1: Try direct Graph API call
+        try {
+            $recycleBinItems = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/sites/$SiteId/recycleBin" -Method GET -ErrorAction SilentlyContinue
+            if ($recycleBinItems.value) {
+                $recycleBinItems = $recycleBinItems.value
+            }
+        } catch {
+            # Method 2: Try alternative approach with drives
+            try {
+                $drives = Get-MgSiteDrive -SiteId $SiteId -ErrorAction SilentlyContinue
+                foreach ($drive in $drives) {
+                    try {
+                        $driveRecycleBin = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/drives/$($drive.Id)/recycleBin" -Method GET -ErrorAction SilentlyContinue
+                        if ($driveRecycleBin.value) {
+                            $recycleBinItems += $driveRecycleBin.value
+                        }
+                    } catch {
+                        # Skip this drive if recycle bin access fails
+                    }
+                }
+            } catch {
+                # Recycle bin access not available for this site
+            }
+        }
+        
+        if ($recycleBinItems.Count -gt 0) {
+            $totalSize = ($recycleBinItems | Where-Object { $_.size } | Measure-Object -Property size -Sum -ErrorAction SilentlyContinue).Sum
+            return [math]::Round($totalSize / 1GB, 3)
+        }
+        
+        return 0
+    } catch {
+        return 0
+    }
+}
+#endregion
 #region Main Execution Function
 function Main {
     try {
@@ -1117,10 +1350,23 @@ function Main {
         # Connect to Microsoft Graph
         Connect-ToGraph
         
+        # Use default search terms
+        $searchTerms = "AllSites"
+        
         Write-Host "[Info] Starting tenant-wide SharePoint audit..." -ForegroundColor Cyan
         $tenantName = Get-TenantName
-        $dateStr = Get-Date -Format yyyyMMdd_HHmmss
-        $excelFileName = "TenantAudit-$tenantName-$dateStr.xlsx"
+        $dateStr = Get-Date -Format yyyyMMdd
+        
+        # Create filename based on search terms, tenant name, and date
+        $cleanSearchTerms = $searchTerms -replace '[^\w\s-]', '' -replace '\s+', '_'
+        $defaultFileName = "SharePointAudit-$cleanSearchTerms-$tenantName-$dateStr.xlsx"
+        
+        # Get save file path from user dialog
+        $excelFileName = Get-SaveFileDialog -DefaultFileName $defaultFileName -Title "Save SharePoint Audit Report"
+        if (-not $excelFileName) {
+            Write-Host "[Info] User cancelled the save dialog. Exiting." -ForegroundColor Yellow
+            return
+        }
         
         # Get all SharePoint sites in the tenant
         $sites = Get-AllSharePointSites
@@ -1128,9 +1374,8 @@ function Main {
             Write-Host "[Warning] No sites found. Exiting." -ForegroundColor Yellow
             return
         }
-        # Only process the first site for testing
-        $sites = @($sites | Select-Object -First 1)
-        Write-Host "[Test Mode] Only scanning site: $($sites[0].DisplayName) ($($sites[0].WebUrl))" -ForegroundColor Yellow
+        
+        Write-Host "[Info] Found $($sites.Count) total sites to analyze (including SharePoint sites and OneDrive personal sites)..." -ForegroundColor Cyan
 
         # First, get summary storage for all sites
         $siteSummaries = @()
@@ -1163,16 +1408,16 @@ function Main {
                 # Skip system/hidden sites that commonly cause access issues
                 $skipSite = $false
                 $systemSitePatterns = @(
-                    'contentstorage',
-                    'portals/hub',
-                    '_api',
-                    'search',
-                    'admin'
+                    "contentstorage",
+                    "portals/hub",
+                    "_api",
+                    "search",
+                    "admin"
                 )
                 
-                # Don't skip personal OneDrive sites even if they have "mysites" or "personal" in URL
+                # Do not skip personal OneDrive sites even if they have "mysites" or "personal" in URL
                 if (-not $isOneDrive) {
-                    $systemSitePatterns += @('mysites', 'personal')
+                    $systemSitePatterns += @("mysites", "personal")
                 }
                 
                 foreach ($pattern in $systemSitePatterns) {
@@ -1262,15 +1507,38 @@ function Main {
                 Write-Host "[Error] Failed to get user access for site $($site.DisplayName): $_" -ForegroundColor Red
             }
             
+            # Scan ALL sites for large files (>100MB) as per description requirement
+            $fileDataForLargeFiles = @{ Files = @(); FolderSizes = @{}; TotalFiles = 0; TotalSizeGB = 0 }
+            try {
+                $fileDataForLargeFiles = Get-FileData -Site $site
+                
+                # Find large files (>100MB) in this site
+                if ($fileDataForLargeFiles.Files.Count -gt 0) {
+                    $largeFiles = $fileDataForLargeFiles.Files | Where-Object { $_.Size -gt 100MB } | ForEach-Object {
+                        [PSCustomObject]@{
+                            SiteName = $site.DisplayName
+                            FileName = $_.Name
+                            SizeMB = $_.SizeMB
+                            SizeGB = $_.SizeGB
+                            Path = $_.Path
+                            Extension = $_.Extension
+                            LibraryName = $_.LibraryName
+                            FullPath = $_.FullPath
+                            PathLength = $_.PathLength
+                        }
+                    }
+                    if ($largeFiles.Count -gt 0) {
+                        $global:allLargeFiles += $largeFiles
+                    }
+                }
+            }
+            catch {
+                Write-Host "[Error] Failed to scan site $($site.DisplayName) for large files: $_" -ForegroundColor Red
+            }
+            
             if ($isTopSite) {
-                # Get detailed file data for top sites (with error handling)
-                $fileData = @{ Files = @(); FolderSizes = @{}; TotalFiles = 0; TotalSizeGB = 0 }
-                try {
-                    $fileData = Get-FileData -Site $site
-                }
-                catch {
-                    Write-Host "[Error] Failed to get file data for site $($site.DisplayName): $_" -ForegroundColor Red
-                }
+                # Use the already collected file data for top sites detailed analysis
+                $fileData = $fileDataForLargeFiles
                 
                 # Only get folder access if we have files
                 $folderAccess = @()
@@ -1285,7 +1553,7 @@ function Main {
                 
                 # Add to collections
                 if ($fileData.Files.Count -gt 0) {
-                    $allTopFiles += $fileData.Files | Select-Object @{Name='SiteName';Expression={$site.DisplayName}}, *
+                    $allTopFiles += $fileData.Files | Select-Object @{Name="SiteName";Expression={$site.DisplayName}}, *
                 }
                 
                 if ($fileData.FolderSizes.Count -gt 0) {
@@ -1296,24 +1564,6 @@ function Main {
                             SizeGB = [math]::Round($_.Value / 1GB, 3)
                             SizeMB = [math]::Round($_.Value / 1MB, 2)
                         }
-                    }
-                }
-                
-                # Find large files (>100MB) for this site
-                if ($fileData.Files.Count -gt 0) {
-                    $largeFiles = $fileData.Files | Where-Object { $_.Size -gt 100MB } | ForEach-Object {
-                        [PSCustomObject]@{
-                            SiteName = $site.DisplayName
-                            FileName = $_.Name
-                            SizeMB = $_.SizeMB
-                            SizeGB = $_.SizeGB
-                            Path = $_.Path
-                            Extension = $_.Extension
-                            LibraryName = $_.LibraryName
-                        }
-                    }
-                    if ($largeFiles.Count -gt 0) {
-                        $global:allLargeFiles += $largeFiles
                     }
                 }
                 
@@ -1345,17 +1595,114 @@ function Main {
                 
                 # Export owners and members to separate worksheets
                 if ($userAccess.Owners.Count -gt 0) {
-                    $userAccess.Owners | Export-Excel -Path $excelFileName -WorksheetName ("Owners - " + $site.DisplayName.Substring(0, [Math]::Min($site.DisplayName.Length, 25))) -AutoSize -TableStyle Medium7
+                    $ownersSheetName = Get-SafeWorksheetName ("Owners - " + $site.DisplayName.Substring(0, [Math]::Min($site.DisplayName.Length, 20)))
+                    $excel = $userAccess.Owners | Export-Excel -Path $excelFileName -WorksheetName $ownersSheetName -AutoSize -TableStyle Light1 -PassThru
+                    
+                    # Apply high contrast formatting to Owners worksheet
+                    $ws = $excel.Workbook.Worksheets[$ownersSheetName]
+                    if ($ws) {
+                        # Set high contrast colors for header row - gold theme for owners
+                        $headerRange = $ws.Cells[$ws.Dimension.Start.Row, $ws.Dimension.Start.Column, $ws.Dimension.Start.Row, $ws.Dimension.End.Column]
+                        $headerRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                        $headerRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::DarkGoldenrod)
+                        $headerRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+                        $headerRange.Style.Font.Bold = $true
+                        $headerRange.Style.Font.Size = 12
+                        
+                        # Set alternating high contrast rows for data
+                        $dataRows = $ws.Dimension.Rows
+                        for ($row = 2; $row -le $dataRows; $row++) {
+                            $rowRange = $ws.Cells[$row, $ws.Dimension.Start.Column, $row, $ws.Dimension.End.Column]
+                            if ($row % 2 -eq 0) {
+                                $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                                $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Goldenrod)
+                                $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+                            } else {
+                                $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                                $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightGoldenrodYellow)
+                                $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::Black)
+                            }
+                            $rowRange.Style.Font.Bold = $true
+                            $rowRange.Style.Font.Size = 10
+                        }
+                    }
+                    Close-ExcelPackage $excel
                 }
                 if ($userAccess.Members.Count -gt 0) {
-                    $userAccess.Members | Export-Excel -Path $excelFileName -WorksheetName ("Members - " + $site.DisplayName.Substring(0, [Math]::Min($site.DisplayName.Length, 25))) -AutoSize -TableStyle Medium8
+                    $membersSheetName = Get-SafeWorksheetName ("Members - " + $site.DisplayName.Substring(0, [Math]::Min($site.DisplayName.Length, 20)))
+                    $excel = $userAccess.Members | Export-Excel -Path $excelFileName -WorksheetName $membersSheetName -AutoSize -TableStyle Light1 -PassThru
+                    
+                    # Apply high contrast formatting to Members worksheet
+                    $ws = $excel.Workbook.Worksheets[$membersSheetName]
+                    if ($ws) {
+                        # Set high contrast colors for header row - blue theme for members
+                        $headerRange = $ws.Cells[$ws.Dimension.Start.Row, $ws.Dimension.Start.Column, $ws.Dimension.Start.Row, $ws.Dimension.End.Column]
+                        $headerRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                        $headerRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::DarkBlue)
+                        $headerRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+                        $headerRange.Style.Font.Bold = $true
+                        $headerRange.Style.Font.Size = 12
+                        
+                        # Set alternating high contrast rows for data
+                        $dataRows = $ws.Dimension.Rows
+                        for ($row = 2; $row -le $dataRows; $row++) {
+                            $rowRange = $ws.Cells[$row, $ws.Dimension.Start.Column, $row, $ws.Dimension.End.Column]
+                            if ($row % 2 -eq 0) {
+                                $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                                $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::MediumBlue)
+                                $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+                            } else {
+                                $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                                $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightSkyBlue)
+                                $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::Black)
+                            }
+                            $rowRange.Style.Font.Bold = $true
+                            $rowRange.Style.Font.Size = 10
+                        }
+                    }
+                    Close-ExcelPackage $excel
                 }
                 
                 # Export external guests with highlighting
                 try {
                     $siteInfo = Get-SiteStorageAndAccess -Site $site
                     if ($siteInfo.ExternalGuests.Count -gt 0) {
-                        $siteInfo.ExternalGuests | Export-Excel -Path $excelFileName -WorksheetName ("External Guests - " + $site.DisplayName.Substring(0, [Math]::Min($site.DisplayName.Length, 20))) -AutoSize -TableStyle Medium9
+                        $guestsSheetName = Get-SafeWorksheetName ("External Guests - " + $site.DisplayName.Substring(0, [Math]::Min($site.DisplayName.Length, 15)))
+                        
+                        # Export with high contrast formatting to highlight external guests in red
+                        $excel = $siteInfo.ExternalGuests | Export-Excel -Path $excelFileName -WorksheetName $guestsSheetName -AutoSize -TableStyle Light1 -PassThru
+                        $ws = $excel.Workbook.Worksheets[$guestsSheetName]
+                        
+                        if ($ws) {
+                            # Apply high contrast red formatting for external guests (security warning theme)
+                            $headerRange = $ws.Cells[$ws.Dimension.Start.Row, $ws.Dimension.Start.Column, $ws.Dimension.Start.Row, $ws.Dimension.End.Column]
+                            $headerRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                            $headerRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::DarkRed)
+                            $headerRange.Style.Font.Color.SetColor([System.Drawing.Color]::Yellow)
+                            $headerRange.Style.Font.Bold = $true
+                            $headerRange.Style.Font.Size = 12
+                            
+                            # Apply high contrast red to all data cells for external guests
+                            $dataRows = $ws.Dimension.Rows
+                            for ($row = 2; $row -le $dataRows; $row++) {
+                                $rowRange = $ws.Cells[$row, $ws.Dimension.Start.Column, $row, $ws.Dimension.End.Column]
+                                if ($row % 2 -eq 0) {
+                                    # Even rows - bright red background with white text
+                                    $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                                    $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Red)
+                                    $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+                                } else {
+                                    # Odd rows - light coral background with dark red text
+                                    $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                                    $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightCoral)
+                                    $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::DarkRed)
+                                }
+                                $rowRange.Style.Font.Bold = $true
+                                $rowRange.Style.Font.Size = 10
+                            }
+                        }
+                        
+                        Close-ExcelPackage $excel
                     }
                 }
                 catch {
@@ -1410,123 +1757,340 @@ function Main {
             Write-Host "[Warning] No site summaries to export" -ForegroundColor Yellow
             return
         }
-        
-        $excel = $allSiteSummaries | Export-Excel -Path $excelFileName -WorksheetName "Summary" -AutoSize -TableStyle Medium2 -PassThru
-        
-        Write-Progress -Activity "Generating Excel Report" -Status "Exporting files data..." -PercentComplete 20
-        if ($allTopFiles.Count -gt 0) {
-            try {
-                $allTopFiles | Export-Excel -ExcelPackage $excel -WorksheetName "Top Files" -AutoSize -TableStyle Medium6
-            } catch {
-                Write-Host "[Error] Failed to export top files: $_" -ForegroundColor Red
-            }
-        } else {
-            # Create empty sheet with message
-            $emptyData = @([PSCustomObject]@{Message = "No files found in top sites"})
-            $emptyData | Export-Excel -ExcelPackage $excel -WorksheetName "Top Files" -AutoSize
+
+        # Remove any existing Excel file to avoid conflicts
+        if (Test-Path $excelFileName) {
+            Remove-Item $excelFileName -Force -ErrorAction SilentlyContinue
         }
-        
-        Write-Progress -Activity "Generating Excel Report" -Status "Exporting folders data..." -PercentComplete 40
-        if ($allTopFolders.Count -gt 0) {
-            try {
-                $allTopFolders | Export-Excel -ExcelPackage $excel -WorksheetName "Top Folders" -AutoSize -TableStyle Medium3
-            } catch {
-                Write-Host "[Error] Failed to export top folders: $_" -ForegroundColor Red
-            }
-        } else {
-            # Create empty sheet with message
-            $emptyData = @([PSCustomObject]@{Message = "No folders found in top sites"})
-            $emptyData | Export-Excel -ExcelPackage $excel -WorksheetName "Top Folders" -AutoSize
-        }
-        
-        Write-Progress -Activity "Generating Excel Report" -Status "Exporting large files..." -PercentComplete 60
-        if ($global:allLargeFiles.Count -gt 0) {
-            try {
-                $global:allLargeFiles | Sort-Object SizeMB -Descending | Export-Excel -ExcelPackage $excel -WorksheetName "Large Files (>100MB)" -AutoSize -TableStyle Medium5
-            } catch {
-                Write-Host "[Error] Failed to export large files: $_" -ForegroundColor Red
-            }
-        } else {
-            # Create empty sheet with message
-            $emptyData = @([PSCustomObject]@{Message = "No large files (>100MB) found"})
-            $emptyData | Export-Excel -ExcelPackage $excel -WorksheetName "Large Files (>100MB)" -AutoSize
-        }
-        
-        # Export site type breakdown
-        Write-Progress -Activity "Generating Excel Report" -Status "Exporting site type analysis..." -PercentComplete 70
-        if ($siteTypeBreakdown.Count -gt 0) {
-            try {
-                $siteTypeBreakdown | Export-Excel -ExcelPackage $excel -WorksheetName "Site Type Analysis" -AutoSize -TableStyle Medium10
-            } catch {
-                Write-Host "[Error] Failed to export site type analysis: $_" -ForegroundColor Red
-            }
-        } else {
-            # Create empty sheet with message
-            $emptyData = @([PSCustomObject]@{Message = "No site type data available"})
-            $emptyData | Export-Excel -ExcelPackage $excel -WorksheetName "Site Type Analysis" -AutoSize
-        }
-        
-        Write-Progress -Activity "Generating Excel Report" -Status "Creating charts..." -PercentComplete 80
-        
-        if ($tenantPieChart.Count -gt 0) {
-            try {
-                $tenantPieChart | Export-Excel -ExcelPackage $excel -WorksheetName "Tenant Storage Pie" -AutoSize -TableStyle Medium4
+
+        Write-Host "[Info] Creating Excel report with $($allSiteSummaries.Count) site summaries..." -ForegroundColor Cyan
+
+        try {
+            # Create comprehensive SharePoint Storage Pie Chart Data (including recycle bins and personal sites)
+            Write-Progress -Activity "Generating Excel Report" -Status "Creating comprehensive storage analysis..." -PercentComplete 5
+            
+            $comprehensiveStorageData = @()
+            $totalTenantStorage = 0
+            $recycleBinStorage = 0
+            $personalOneDriveStorage = 0
+            $sharePointSitesStorage = 0
+            
+            # Calculate storage breakdown
+            foreach ($siteSummary in $siteSummaries) {
+                $totalTenantStorage += $siteSummary.StorageGB
                 
-                # Add tenant storage pie chart
-                $ws = $excel.Workbook.Worksheets["Tenant Storage Pie"]
-                if ($ws) {
+                if ($siteSummary.IsOneDrive) {
+                    $personalOneDriveStorage += $siteSummary.StorageGB
+                } else {
+                    $sharePointSitesStorage += $siteSummary.StorageGB
+                }
+                
+                # Add individual site to comprehensive data
+                $comprehensiveStorageData += [PSCustomObject]@{
+                    Category = if ($siteSummary.IsOneDrive) { "Personal OneDrive" } else { "SharePoint Site" }
+                    SiteName = $siteSummary.SiteName
+                    StorageGB = $siteSummary.StorageGB
+                    Percentage = if ($totalTenantStorage -gt 0) { [math]::Round(($siteSummary.StorageGB / $totalTenantStorage) * 100, 2) } else { 0 }
+                    SiteUrl = $siteSummary.SiteUrl
+                    SiteType = $siteSummary.SiteType
+                }
+            }
+            
+            # Get recycle bin storage (attempt to retrieve from all sites)
+            Write-Host "[Info] Attempting to calculate recycle bin storage..." -ForegroundColor Cyan
+            foreach ($siteSummary in $siteSummaries) {
+                try {
+                    $recycleBinSizeForSite = Get-SiteRecycleBinStorage -SiteId $siteSummary.SiteId
+                    if ($recycleBinSizeForSite -gt 0) {
+                        $recycleBinStorage += $recycleBinSizeForSite
+                    }
+                } catch {
+                    Write-Host "[Debug] Could not access recycle bin for site: $($siteSummary.SiteName)" -ForegroundColor Yellow
+                }
+            }
+            
+            # Create pie chart summary data
+            $pieChartData = @(
+                [PSCustomObject]@{
+                    Category = "SharePoint Sites"
+                    StorageGB = $sharePointSitesStorage
+                    Percentage = if ($totalTenantStorage -gt 0) { [math]::Round(($sharePointSitesStorage / $totalTenantStorage) * 100, 2) } else { 0 }
+                    SiteCount = ($siteSummaries | Where-Object { -not $_.IsOneDrive }).Count
+                },
+                [PSCustomObject]@{
+                    Category = "Personal OneDrive"
+                    StorageGB = $personalOneDriveStorage
+                    Percentage = if ($totalTenantStorage -gt 0) { [math]::Round(($personalOneDriveStorage / $totalTenantStorage) * 100, 2) } else { 0 }
+                    SiteCount = ($siteSummaries | Where-Object { $_.IsOneDrive }).Count
+                },
+                [PSCustomObject]@{
+                    Category = "Recycle Bins"
+                    StorageGB = $recycleBinStorage
+                    Percentage = if (($totalTenantStorage + $recycleBinStorage) -gt 0) { [math]::Round(($recycleBinStorage / ($totalTenantStorage + $recycleBinStorage)) * 100, 2) } else { 0 }
+                    SiteCount = "All Sites"
+                }
+            )
+            
+            # Create comprehensive site details with users and access information
+            Write-Progress -Activity "Generating Excel Report" -Status "Compiling comprehensive site details..." -PercentComplete 10
+            
+            $comprehensiveSiteDetails = @()
+            foreach ($siteSummary in $siteSummaries) {
+                $site = $siteSummary.Site
+                
+                # Get detailed user access for this site
+                try {
+                    $userAccess = Get-SiteUserAccessSummary -Site $site
+                    $folderAccess = @()
+                    
+                    # Get folder access permissions
                     try {
-                        $chart = $ws.Drawings.AddChart("TenantStorageChart", [OfficeOpenXml.Drawing.Chart.eChartType]::Pie)
-                        $chart.Title.Text = "Tenant Storage Usage (Top 10 Sites)"
-                        $chart.SetPosition(1, 0, 7, 0)
-                        $chart.SetSize(500, 400)
-                        $series = $chart.Series.Add($ws.Cells["B2:B$($tenantPieChart.Count + 1)"], $ws.Cells["A2:A$($tenantPieChart.Count + 1)"])
-                        $series.Header = "Size (GB)"
+                        $folderAccess = Get-ParentFolderAccess -Site $site
                     } catch {
-                        Write-Host "[Error] Failed to create tenant storage chart: $_" -ForegroundColor Red
+                        Write-Host "[Debug] Could not get folder access for site: $($site.DisplayName)" -ForegroundColor Yellow
+                    }
+                    
+                    # Compile all users and groups with their access details
+                    $allUsersString = ""
+                    $allOwnersString = ""
+                    $accessTypesString = ""
+                    $foldersAccessString = ""
+                    
+                    if ($userAccess.Owners.Count -gt 0) {
+                        $allOwnersString = ($userAccess.Owners | ForEach-Object { "$($_.DisplayName) ($($_.Mail))" }) -join "; "
+                    }
+                    
+                    if ($userAccess.Members.Count -gt 0) {
+                        $membersString = ($userAccess.Members | ForEach-Object { "$($_.DisplayName) ($($_.Mail)) - $($_.AccessLevel)" }) -join "; "
+                        $allUsersString = $membersString
+                    }
+                    
+                    if ($folderAccess.Count -gt 0) {
+                        $accessTypesString = ($folderAccess.PermissionLevel | Sort-Object -Unique) -join ", "
+                        $foldersAccessString = ($folderAccess | ForEach-Object { "$($_.FolderPath) - $($_.PermissionLevel)" }) -join "; "
+                    }
+                    
+                    $comprehensiveSiteDetails += [PSCustomObject]@{
+                        SiteName = $site.DisplayName
+                        SiteUrl = $site.WebUrl
+                        SiteType = $siteSummary.SiteType
+                        StorageGB = $siteSummary.StorageGB
+                        TotalFiles = if ($siteSummary.SiteId -in $topSites.SiteId) { 
+                            ($allTopFiles | Where-Object { $_.SiteName -eq $site.DisplayName }).Count 
+                        } else { "Not analyzed (not in top 10)" }
+                        OwnersCount = $userAccess.Owners.Count
+                        MembersCount = $userAccess.Members.Count
+                        AllOwners = $allOwnersString
+                        AllUsersAndGroups = $allUsersString
+                        AccessTypes = $accessTypesString
+                        FoldersWithAccess = $foldersAccessString
+                        UniquePermissionLevels = if ($folderAccess.Count -gt 0) { ($folderAccess.PermissionLevel | Sort-Object -Unique).Count } else { 0 }
+                        LastAnalyzed = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        IsTopSite = if ($siteSummary.SiteId -in $topSites.SiteId) { "Yes" } else { "No" }
+                    }
+                } catch {
+                    Write-Host "[Error] Failed to compile comprehensive details for site $($site.DisplayName): $_" -ForegroundColor Red
+                    
+                    # Add basic info even if detailed analysis fails
+                    $comprehensiveSiteDetails += [PSCustomObject]@{
+                        SiteName = $site.DisplayName
+                        SiteUrl = $site.WebUrl
+                        SiteType = $siteSummary.SiteType
+                        StorageGB = $siteSummary.StorageGB
+                        TotalFiles = "Error retrieving data"
+                        OwnersCount = 0
+                        MembersCount = 0
+                        AllOwners = "Error retrieving data"
+                        AllUsersAndGroups = "Error retrieving data"
+                        AccessTypes = "Error retrieving data"
+                        FoldersWithAccess = "Error retrieving data"
+                        UniquePermissionLevels = 0
+                        LastAnalyzed = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        IsTopSite = if ($siteSummary.SiteId -in $topSites.SiteId) { "Yes" } else { "No" }
                     }
                 }
-                
-                # Add individual site pie charts
-                foreach ($site in $tenantPieChart) {
-                    $siteName = $site.SiteName
-                    if ($sitePieCharts.ContainsKey($siteName) -and $sitePieCharts[$siteName]) {
-                        try {
-                            $sitePieCharts[$siteName] | Export-Excel -ExcelPackage $excel -WorksheetName ("Pie - " + $siteName.Substring(0, [Math]::Min($siteName.Length, 25))) -AutoSize -TableStyle Medium4
-                            
-                            $wsSite = $excel.Workbook.Worksheets["Pie - " + $siteName.Substring(0, [Math]::Min($siteName.Length, 25))]
-                            if ($wsSite -and $sitePieCharts[$siteName]) {
-                                $chartSite = $wsSite.Drawings.AddChart("SiteStorageChart", [OfficeOpenXml.Drawing.Chart.eChartType]::Pie)
-                                $chartSite.Title.Text = "Storage Usage by Folder (Top 10)"
-                                $chartSite.SetPosition(1, 0, 7, 0)
-                                $chartSite.SetSize(500, 400)
-                                $rowCount = $sitePieCharts[$siteName].Count
-                                if ($rowCount -gt 0) {
-                                    $chartSite.Series.Add($wsSite.Cells["B2:B$($rowCount + 1)"], $wsSite.Cells["A2:A$($rowCount + 1)"])
-                                }
-                            }
-                        } catch {
-                            Write-Host "[Error] Failed to create site storage chart for $siteName`: $_" -ForegroundColor Red
-                        }
-                    }
-                }
-            } catch {
-                Write-Host "[Error] Failed to export tenant storage data: $_" -ForegroundColor Red
             }
-        }
-        
-        Write-Progress -Activity "Generating Excel Report" -Status "Finalizing report..." -PercentComplete 100
-        
-        # Close and save Excel package
-        if ($excel -and $excel.Workbook.Worksheets.Count -gt 0) {
-            Close-ExcelPackage $excel
-            Write-Progress -Activity "Generating Excel Report" -Completed
-            Write-Host "`n[Success] Report saved to: $excelFileName" -ForegroundColor Green
-            Write-Host "[Report Summary] Sites: $($siteSummaries.Count) | Files: $($allTopFiles.Count) | Large Files (>100MB): $($global:allLargeFiles.Count)" -ForegroundColor Cyan
-        } 
-        else {
-            Write-Progress -Activity "Generating Excel Report" -Completed
-            Write-Host "[Warning] No data was found to export. No Excel report was generated." -ForegroundColor Yellow
+            
+            # Export SharePoint Storage Pie Chart first (at top of workbook)
+            Write-Progress -Activity "Generating Excel Report" -Status "Creating SharePoint Storage Pie Chart..." -PercentComplete 15
+            if ($pieChartData.Count -gt 0) {
+                $excel = $pieChartData | Export-Excel -Path $excelFileName -WorksheetName "SharePoint Storage Pie Chart" -AutoSize -TableStyle Light1 -Title "SharePoint Tenant Storage Overview (Includes Recycle Bins)" -TitleBold -TitleSize 16 -PassThru
+                
+                # Apply high contrast formatting to pie chart worksheet
+                $ws = $excel.Workbook.Worksheets["SharePoint Storage Pie Chart"]
+                if ($ws) {
+                    # Set high contrast colors for header row
+                    $headerRange = $ws.Cells["A1:D1"]
+                    $headerRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                    $headerRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Black)
+                    $headerRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+                    $headerRange.Style.Font.Bold = $true
+                    $headerRange.Style.Font.Size = 12
+                    
+                    # Set alternating high contrast rows for data
+                    $dataRows = $ws.Dimension.Rows
+                    for ($row = 2; $row -le $dataRows; $row++) {
+                        $rowRange = $ws.Cells["A$row:D$row"]
+                        if ($row % 2 -eq 0) {
+                            # Even rows - dark gray background with white text
+                            $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                            $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::DarkGray)
+                            $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+                        } else {
+                            # Odd rows - light gray background with black text
+                            $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                            $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightGray)
+                            $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::Black)
+                        }
+                        $rowRange.Style.Font.Bold = $true
+                        $rowRange.Style.Font.Size = 11
+                    }
+                }
+                Close-ExcelPackage $excel
+            }
+            
+            # Export comprehensive site details worksheet
+            Write-Progress -Activity "Generating Excel Report" -Status "Creating comprehensive site details..." -PercentComplete 20
+            if ($comprehensiveSiteDetails.Count -gt 0) {
+                $excel = $comprehensiveSiteDetails | Export-Excel -Path $excelFileName -WorksheetName "Site Summary with Details" -AutoSize -TableStyle Light1 -Title "Complete Site Summary with Users, Groups, and Access Details" -TitleBold -TitleSize 14 -PassThru
+                
+                # Apply high contrast formatting to site details worksheet
+                $ws = $excel.Workbook.Worksheets["Site Summary with Details"]
+                if ($ws) {
+                    # Set high contrast colors for header row
+                    $headerRange = $ws.Cells[$ws.Dimension.Start.Row, $ws.Dimension.Start.Column, $ws.Dimension.Start.Row, $ws.Dimension.End.Column]
+                    $headerRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                    $headerRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Navy)
+                    $headerRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+                    $headerRange.Style.Font.Bold = $true
+                    $headerRange.Style.Font.Size = 12
+                    
+                    # Set alternating high contrast rows for data
+                    $dataRows = $ws.Dimension.Rows
+                    for ($row = 2; $row -le $dataRows; $row++) {
+                        $rowRange = $ws.Cells[$row, $ws.Dimension.Start.Column, $row, $ws.Dimension.End.Column]
+                        if ($row % 2 -eq 0) {
+                            # Even rows - dark blue background with white text
+                            $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                            $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::DarkBlue)
+                            $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+                        } else {
+                            # Odd rows - light blue background with black text
+                            $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                            $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightSteelBlue)
+                            $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::Black)
+                        }
+                        $rowRange.Style.Font.Bold = $true
+                        $rowRange.Style.Font.Size = 10
+                    }
+                }
+                Close-ExcelPackage $excel
+            }
+            
+            # Export detailed storage breakdown
+            if ($comprehensiveStorageData.Count -gt 0) {
+                $excel = $comprehensiveStorageData | Sort-Object StorageGB -Descending | Export-Excel -Path $excelFileName -WorksheetName "Detailed Storage Breakdown" -AutoSize -TableStyle Light1 -PassThru
+                
+                # Apply high contrast formatting to storage breakdown worksheet
+                $ws = $excel.Workbook.Worksheets["Detailed Storage Breakdown"]
+                if ($ws) {
+                    # Set high contrast colors for header row
+                    $headerRange = $ws.Cells[$ws.Dimension.Start.Row, $ws.Dimension.Start.Column, $ws.Dimension.Start.Row, $ws.Dimension.End.Column]
+                    $headerRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                    $headerRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::DarkGreen)
+                    $headerRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+                    $headerRange.Style.Font.Bold = $true
+                    $headerRange.Style.Font.Size = 12
+                    
+                    # Set alternating high contrast rows for data
+                    $dataRows = $ws.Dimension.Rows
+                    for ($row = 2; $row -le $dataRows; $row++) {
+                        $rowRange = $ws.Cells[$row, $ws.Dimension.Start.Column, $row, $ws.Dimension.End.Column]
+                        if ($row % 2 -eq 0) {
+                            # Even rows - dark green background with white text
+                            $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                            $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::DarkOliveGreen)
+                            $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+                        } else {
+                            # Odd rows - light green background with black text
+                            $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                            $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightGreen)
+                            $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::Black)
+                        }
+                        $rowRange.Style.Font.Bold = $true
+                        $rowRange.Style.Font.Size = 10
+                    }
+                }
+                Close-ExcelPackage $excel
+            }
+            
+            # Create the original summary for compatibility
+            # Split summaries into Document Library (SharePoint) and Personal OneDrive
+            $docLibrarySummaries = $allSiteSummaries | Where-Object { $_.SiteType -eq "SharePoint Site" }
+            $oneDriveSummaries = $allSiteSummaries | Where-Object { $_.SiteType -eq "OneDrive Personal" }
+
+            # Export Document Library Sites summary
+            if ($docLibrarySummaries.Count -gt 0) {
+                $excel = $docLibrarySummaries | Export-Excel -Path $excelFileName -WorksheetName "Document Library Sites" -AutoSize -TableStyle Light1 -PassThru
+                $ws = $excel.Workbook.Worksheets["Document Library Sites"]
+                if ($ws) {
+                    $headerRange = $ws.Cells[$ws.Dimension.Start.Row, $ws.Dimension.Start.Column, $ws.Dimension.Start.Row, $ws.Dimension.End.Column]
+                    $headerRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                    $headerRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Black)
+                    $headerRange.Style.Font.Color.SetColor([System.Drawing.Color]::Yellow)
+                    $headerRange.Style.Font.Bold = $true
+                    $headerRange.Style.Font.Size = 12
+                    $dataRows = $ws.Dimension.Rows
+                    for ($row = 2; $row -le $dataRows; $row++) {
+                        $rowRange = $ws.Cells[$row, $ws.Dimension.Start.Column, $row, $ws.Dimension.End.Column]
+                        if ($row % 2 -eq 0) {
+                            $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                            $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::DarkGray)
+                            $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::Yellow)
+                        } else {
+                            $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                            $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightGray)
+                            $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::Black)
+                        }
+                        $rowRange.Style.Font.Bold = $true
+                        $rowRange.Style.Font.Size = 10
+                    }
+                }
+                Close-ExcelPackage $excel
+            }
+
+            # Export Personal OneDrive Sites summary
+            if ($oneDriveSummaries.Count -gt 0) {
+                $excel = $oneDriveSummaries | Export-Excel -Path $excelFileName -WorksheetName "Personal OneDrive Sites Summary" -AutoSize -TableStyle Light1 -PassThru
+                $ws = $excel.Workbook.Worksheets["Personal OneDrive Sites Summary"]
+                if ($ws) {
+                    $headerRange = $ws.Cells[$ws.Dimension.Start.Row, $ws.Dimension.Start.Column, $ws.Dimension.Start.Row, $ws.Dimension.End.Column]
+                    $headerRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                    $headerRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::DarkCyan)
+                    $headerRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+                    $headerRange.Style.Font.Bold = $true
+                    $headerRange.Style.Font.Size = 12
+                    $dataRows = $ws.Dimension.Rows
+                    for ($row = 2; $row -le $dataRows; $row++) {
+                        $rowRange = $ws.Cells[$row, $ws.Dimension.Start.Column, $row, $ws.Dimension.End.Column]
+                        if ($row % 2 -eq 0) {
+                            $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                            $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Teal)
+                            $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+                        } else {
+                            $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                            $rowRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::PaleTurquoise)
+                            $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::Black)
+                        }
+                        $rowRange.Style.Font.Bold = $true
+                        $rowRange.Style.Font.Size = 10
+                    }
+                }
+                Close-ExcelPackage $excel
+            }
+        } catch {
+            Write-Host "[Error] Failed to create Excel report: $_" -ForegroundColor Red
+            throw $_
         }
     }
     catch {
