@@ -15,14 +15,6 @@
   - Progress bars for site/library/file processing
   - Robust error handling and reporting
   - Certificate-based authentication only
-  Features:
-  - Scans the entire tenant (not just a single site)
-  - Aggregates and summarizes results for easy review
-  - Lists site owners and members
-  - Finds large files in all document libraries
-  - Modern error handling and reporting
-  - Progress bars for all major operations
-  - Modular, maintainable, and extensible design
 #>
 #region Configuration and Prerequisites
 # Set strict error handling
@@ -1136,7 +1128,10 @@ function Main {
             Write-Host "[Warning] No sites found. Exiting." -ForegroundColor Yellow
             return
         }
-        
+        # Only process the first site for testing
+        $sites = @($sites | Select-Object -First 1)
+        Write-Host "[Test Mode] Only scanning site: $($sites[0].DisplayName) ($($sites[0].WebUrl))" -ForegroundColor Yellow
+
         # First, get summary storage for all sites
         $siteSummaries = @()
         $processedCount = 0
