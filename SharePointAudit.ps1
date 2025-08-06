@@ -1,120 +1,127 @@
-# ============================================================================
-# SharePoint Audit Script
-# Author      : Timothy MacLatchy
-# Description : Comprehensive audit of SharePoint sites in a Microsoft 365 tenant
-#               Certificate-based authentication only
-# Prerequisite: PowerShell 7.1+, Microsoft Graph PowerShell SDK, ImportExcel module
-# ============================================================================
-    try {
-        # ...existing code...
-        # Add main summary worksheet, merged with tenant-wide storage breakdown
-        # Build improved summary breakdown
-        $summaryBreakdown = @()
-        $summaryBreakdown += [PSCustomObject]@{
-            Category = "SharePoint Sites"
-            SiteCount = $sharePointSiteCount
-            StorageGB = $activeStorageGB
-            Percentage = [math]::Round(($activeStorageGB / $totalStorageGB) * 100, 2)
-        }
-        $summaryBreakdown += [PSCustomObject]@{
-            Category = "Personal OneDrive"
-            SiteCount = $oneDriveSiteCount
-            StorageGB = $oneDriveStorageGB
-            Percentage = [math]::Round(($oneDriveStorageGB / $totalStorageGB) * 100, 2)
-        }
-        $summaryBreakdown += [PSCustomObject]@{
-            Category = "Recycle Bin"
-            SiteCount = $recycleBinSiteCount
-            StorageGB = $recycleBinStorageGB
-            Percentage = [math]::Round(($recycleBinStorageGB / $totalStorageGB) * 100, 2)
-        }
-        $summaryBreakdown += [PSCustomObject]@{
-            Category = "Total"
-            SiteCount = $sharePointSiteCount + $oneDriveSiteCount
-            StorageGB = $totalStorageGB
-            Percentage = 100
-        }
-
-        # Remove any zero/empty rows except Total
-        $summaryBreakdown = $summaryBreakdown | Where-Object { $_.StorageGB -gt 0 -or $_.Category -eq "Total" }
-
-        Export-ExcelWorksheet -Data $summaryBreakdown -Path $FileName -WorksheetName "Summary" -Title "SharePoint Tenant Storage Overview (Includes Recycle Bins)" -TableStyle "Medium2" -AutoSize -BoldTopRow -FreezeTopRow -HeaderColor "Black" -HeaderTextColor "Yellow"
-
-        # Update pie chart data and legend
-        $pieChartData = $summaryBreakdown | Where-Object { $_.Category -ne "Total" }
-        # ...existing code to generate pie chart using $pieChartData and proper legend labels...
-        # ...existing code...
-if (-not $ClientId) { $ClientId = '278b9af9-888d-4344-93bb-769bdd739249' }
-if (-not $TenantId) { $TenantId = 'ca0711e2-e703-4f4e-9099-17d97863211c' }
-if (-not $CertificateThumbprint) { $CertificateThumbprint = '2E2502BB1EDB8F36CF9DE50936B283BDD22D5BAD' }
-if (-not $ParallelLimit) { $ParallelLimit = 4 }
-
-if ([string]::IsNullOrWhiteSpace($ClientId) -or [string]::IsNullOrWhiteSpace($TenantId) -or [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
-    Write-Host "ERROR: ClientId, TenantId, and CertificateThumbprint must not be empty. Please check your parameters." -ForegroundColor Red
-    exit 1
-}
-
 <#
-.DESCRIPTION
-    This script performs a comprehensive audit of SharePoint sites in a Microsoft 365 tenant and outputs a streamlined Excel report with the following structure:
+SharePointAudit.ps1
 
-    Worksheets and Columns:
-    1. Overview & Summary (combined)
-        - Feature (script capabilities and summary)
-        - Category (SharePoint Sites, Personal OneDrive, Recycle Bin, Total)
-        - SiteCount (number of sites per category)
-        - StorageGB (total storage in GB per category)
-        - Percentage (of total tenant storage)
+Description:
+This script audits all SharePoint and OneDrive sites in a Microsoft 365 tenant, gathering storage, file/folder, and user access details. It authenticates using app-only certificate, queries Microsoft Graph, and generates a comprehensive Excel report and CSV export for direct comparison with SharePoint admin exports.
 
-    2. [Site Name] (for each of the 10 largest sites)
-        - Top 20 Files:
-            - Name
-            - SizeMB
-            - Path
-            - Extension
-        - Top 20 Folders:
-            - FolderPath
-            - SizeGB
-        - Pie chart showing storage breakdown for the site
+Excel Output:
+- Worksheet: "SharePoint Storage Overview"
+  Columns:
+    - Site name
+    - URL
+    - Teams
+    - Channel sites
+    - IBMode
+    - Storage used (GB)
+    - Recycle bin (GB)
+    - Total storage (GB)
+    - Primary admin
+    - Hub
+    - Template
+    - Last activity (UTC)
+    - Date created
+    - Created by
+    - Storage limit (GB)
+    - Storage used (%)
+    - Microsoft 365 group
+    - Files viewed or edited
+    - Page views
+    - Page visits
+    - Files
+    - Sensitivity
+    - External sharing
+    - OwnersCount
+    - MembersCount
+    - ReportDate
 
-    3. Access & Permissions (combined for each site)
-        - UserName
-        - UserEmail
-        - UserType (Internal, External Guest)
-        - AccessType (roles)
-        - Role (Owner, Member)
-        - FolderName
-        - FolderPath
-        - PermissionLevel
+- Worksheet: "Tenant Storage Breakdown" (Pie Chart Data)
+  Columns:
+    - Category (SharePoint Sites, Personal OneDrive, Recycle Bins)
+    - StorageGB
+    - Percentage
+    - SiteCount
 
-    4. Personal OneDrive Details (simplified)
-        - SiteName
-        - UserName
-        - SiteUrl
-        - SizeGB
-        - FileCount
-        - SharedWithCount
-        - SharedWithUsers
-        - SharedWithEmails
-        - AccessDetails
-        - LastAnalyzed
+- Worksheet: "User & Group Access Overview"
+  Columns:
+    - User/Group
+    - Email
+    - Type (Internal, External Guest)
+    - Role
+    - Site
+    - Site URL
+    - Access
+    - Object
+    - Highlight (for external guests)
 
-    All worksheets are formatted with table styles, bold headers, and progress bars are shown during processing. External guest access is highlighted in red in relevant worksheets.
+- Worksheet: "OneDrive Personal Sites"
+  Columns:
+    - User Name
+    - Site Name
+    - URL
+    - Storage Used (GB)
+    - Storage Used (%)
+    - Storage Limit (GB)
+    - Last Activity (UTC)
+    - Date Created
+    - Files Count
+    - External Sharing
+    - Site Type
+    - Report Date
+
+- Worksheet: [site-specific] "$siteName Storage" (for top 10 sites)
+  Columns:
+    - Location (folder breakdown pie chart data)
+    - SizeGB
+    - Top 20 files (Name, Size, Path, Drive, Extension, etc.)
+    - Top 20 folders (FolderPath, SizeGB, SizeMB)
+
+Key Features:
+- Enhanced storage calculations with multiple approaches for accuracy
+- Recycle bin storage analysis across all sites
+- Comprehensive user access reporting including external guests
+- OneDrive personal site detection and aggregation
+- Parallel processing for improved performance
+- Detailed file and folder analysis for largest sites
+- Pie chart data for tenant-level and site-level storage breakdowns
+
+CSV Output:
+- Contains the same columns as "SharePoint Storage Overview" worksheet for direct comparison with admin export.
 #>
 
-# Set strict error handling
-$ErrorActionPreference = "Stop"
-$WarningPreference = "Continue"
+## All function definitions moved to top of file
 
-# Script variables
-$script:tenantName = $null
-$script:excelFileName = $null
-$script:dateStr = Get-Date -Format yyyyMMdd
-$script:processedCount = 0
-$script:successCount = 0
-$script:errorCount = 0
-
+## All function definitions moved to top of file
 #region Logging, Progress, and Utility Functions
+function Get-SiteUserAccessSummary {
+    param(
+        [Parameter(Mandatory=$true)]
+        $Site
+    )
+    $owners = @()
+    $members = @()
+    try {
+        $permissions = Get-MgSitePermission -SiteId $Site.Id -All -ErrorAction SilentlyContinue
+        foreach ($perm in $permissions) {
+            if ($perm.GrantedToV2 -and $perm.GrantedToV2.User) {
+                $userType = if ($perm.GrantedToV2.User.UserType -eq 'Guest') { "External Guest" } else { "Internal" }
+                $userObj = [PSCustomObject]@{
+                    DisplayName = $perm.GrantedToV2.User.DisplayName
+                    UserEmail = $perm.GrantedToV2.User.Email
+                    UserType = $userType
+                    Role = ($perm.Roles -join ', ')
+                }
+                if ($userObj.Role -match 'Owner|Admin') {
+                    $owners += $userObj
+                } else {
+                    $members += $userObj
+                }
+            }
+        }
+    } catch {
+        Write-Log "Failed to get user access for site $($Site.DisplayName): $_" -Level Error
+    }
+    return @{ Owners = $owners; Members = $members }
+}
 function Write-Log {
     param(
         [Parameter(Mandatory=$true)]
@@ -272,147 +279,6 @@ function Install-OrUpdateModule {
     
     return $false
 }
-
-function Remove-ConflictingModules {
-    param(
-        [Parameter(Mandatory=$true)]
-        [string[]]$ModulePatterns
-    )
-    
-    foreach ($pattern in $ModulePatterns) {
-        $loadedModules = Get-Module | Where-Object { $_.Name -like $pattern }
-        foreach ($module in $loadedModules) {
-            Write-Log "Removing conflicting module: $($module.Name) v$($module.Version)" -Level Warning
-            Remove-Module -Name $module.Name -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
-
-function Test-RestartNeeded {
-    $loadedModules = Get-Module | Where-Object { $_.Name -like "Microsoft.Graph*" }
-    $moduleVersions = @{}
-    
-    foreach ($module in $loadedModules) {
-        if (-not $moduleVersions.ContainsKey($module.Name)) {
-            $moduleVersions[$module.Name] = @()
-        }
-        $moduleVersions[$module.Name] += $module.Version
-    }
-    
-    # Check if any module has multiple versions loaded
-    foreach ($moduleName in $moduleVersions.Keys) {
-        if ($moduleVersions[$moduleName].Count -gt 1) {
-            Write-Log "Multiple versions of $moduleName are loaded: $($moduleVersions[$moduleName] -join ", ")" -Level Warning
-            return $true
-        }
-    }
-    
-    return $false
-}
-
-function Initialize-Modules {
-    Write-Log "Checking and installing required modules..." -Level Info
-    
-    # Check for and install only required modules
-    $modulesToInstall = @(
-        @{ Name = "Microsoft.Graph.Authentication"; MinimumVersion = "2.0.0" },
-        @{ Name = "Microsoft.Graph.Sites"; MinimumVersion = "2.0.0" },
-        @{ Name = "Microsoft.Graph.Files"; MinimumVersion = "2.0.0" },
-        @{ Name = "Microsoft.Graph.Users"; MinimumVersion = "2.0.0" },
-        @{ Name = "ImportExcel"; MinimumVersion = "7.0.0" }
-    )
-    
-    $moduleUpdated = $false
-    foreach ($module in $modulesToInstall) {
-        if (Install-OrUpdateModule -ModuleName $module.Name -MinimumVersion $module.MinimumVersion -Force:$false) {
-            $moduleUpdated = $true
-        }
-    }
-    
-    # If modules were updated, we need to restart the PowerShell session
-    if ($moduleUpdated) {
-        Write-Log "Modules were updated. Please restart PowerShell and run the script again." -Level Warning
-        Write-Log "This ensures the new module versions are properly loaded." -Level Info
-        return $false
-    }
-    
-    # Remove any conflicting loaded modules
-    Remove-ConflictingModules -ModulePatterns @("Microsoft.Graph*")
-    
-    # Check if restart is needed due to version conflicts
-    if (Test-RestartNeeded) {
-        Write-Log "Multiple versions of Microsoft Graph modules are loaded. Please restart PowerShell and run the script again." -Level Warning
-        return $false
-    }
-    
-    # Import required modules with specific error handling
-    $importErrorList = @()
-    try {
-        # Add Report Overview worksheet with script description and feature list
-        $overviewText = @(
-            "This script performs a comprehensive audit of SharePoint sites in a Microsoft 365 tenant, including:",
-            "- Scans all SharePoint sites and aggregates storage usage",
-            "- Generates pie charts of storage for the whole tenant (largest 10 sites by size)",
-            "- For each of the 10 largest sites, generates a pie chart showing storage breakdown",
-            "- Collects user access for all sites, including user type (internal/external)",
-            "- Highlights external guest access in red in the Excel report",
-            "- Lists site owners and site members for each site",
-            "- For the top 10 largest sites, shows the top 20 biggest files and folders",
-            "- Exports all results to a well-structured Excel report with multiple worksheets and charts",
-            "- Progress bars for site/library/file processing"
-        )
-        $overviewData = $overviewText | ForEach-Object { [PSCustomObject]@{ Feature = $_ } }
-        Export-ExcelWorksheet -Data $overviewData -Path $ExcelFileName -WorksheetName "Report Overview" -Title "SharePoint Audit Report Overview" -TableStyle "Medium2" -AutoSize -BoldTopRow -FreezeTopRow
-        Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
-        Write-Log "Loaded Microsoft.Graph.Authentication module" -Level Success
-    } catch {
-        $importErrorList += "Microsoft.Graph.Authentication: $_"
-    }
-    
-    try {
-        Import-Module Microsoft.Graph.Sites -ErrorAction Stop
-        Write-Log "Loaded Microsoft.Graph.Sites module" -Level Success
-    } catch {
-        $importErrorList += "Microsoft.Graph.Sites: $_"
-    }
-    
-    try {
-        Import-Module Microsoft.Graph.Files -ErrorAction Stop
-        Write-Log "Loaded Microsoft.Graph.Files module" -Level Success
-    } catch {
-        $importErrorList += "Microsoft.Graph.Files: $_"
-    }
-    
-    try {
-        Import-Module Microsoft.Graph.Users -ErrorAction SilentlyContinue
-        Write-Log "Loaded Microsoft.Graph.Users module" -Level Success
-    } catch {
-        Write-Log "Microsoft.Graph.Users module not available: $_" -Level Warning
-        $importErrorList += "Microsoft.Graph.Users: $_"
-    }
-    
-    try {
-        Import-Module ImportExcel -ErrorAction Stop
-        Write-Log "Loaded ImportExcel module" -Level Success
-    } catch {
-        $importErrorList += "ImportExcel: $_"
-    }
-    
-    # If there were import errors, try to force update the problematic modules
-    if ($importErrorList.Count -gt 0) {
-        Write-Log "Some modules failed to load. Attempting to force update..." -Level Warning
-        foreach ($moduleError in $importErrorList) {
-            $moduleName = $moduleError.Split(':')[0]
-            Write-Log "Force updating module: $moduleName" -Level Info
-            Install-OrUpdateModule -ModuleName $moduleName -MinimumVersion "2.0.0" -Force
-        }
-        
-        Write-Log "Modules were force updated. Please restart PowerShell and run the script again." -Level Warning
-        return $false
-    }
-    
-    return $true
-}
 #endregion
 
 #region Authentication
@@ -515,6 +381,31 @@ function Get-AllSharePointSites {
         }
         catch {
             Write-Log "Site search failed: $_" -Level Warning
+        }
+        
+        # Approach 4: Try to get OneDrive personal sites via users endpoint
+        try {
+            Write-Log "Attempting to discover OneDrive personal sites..." -Level Info
+            $users = Get-MgUser -All -Property "Id,UserPrincipalName,DisplayName" -Filter "UserType eq 'Member'" -Top 100 -ErrorAction SilentlyContinue
+            foreach ($user in $users) {
+                try {
+                    $userDrive = Get-MgUserDrive -UserId $user.Id -ErrorAction SilentlyContinue
+                    if ($userDrive -and $userDrive.WebUrl) {
+                        # Try to get the site information for the OneDrive
+                        $oneDriveSite = Get-MgSite -SiteId "root" -ErrorAction SilentlyContinue | Where-Object { $_.WebUrl -like "*$($user.UserPrincipalName.Split('@')[0])*" }
+                        if ($oneDriveSite) {
+                            $sites += $oneDriveSite
+                        }
+                    }
+                } catch {
+                    # Skip users without accessible OneDrive
+                    continue
+                }
+            }
+            Write-Log "Completed OneDrive personal site discovery" -Level Info
+        }
+        catch {
+            Write-Log "OneDrive personal site discovery failed: $_" -Level Warning
         }
         
         # Remove duplicates and ensure we have valid sites
@@ -657,8 +548,8 @@ function Get-FileData {
         
         Write-Log "Found $($docLibraries.Count) document libraries in site: $($Site.DisplayName)" -Level Success
         
-        $allFiles = @()
-        $systemFiles = @()
+        $allFiles = [System.Collections.Generic.List[psobject]]::new()
+        $systemFiles = [System.Collections.Generic.List[psobject]]::new()
         $folderSizes = @{}
         $totalFiles = 0
         $listIndex = 0
@@ -672,25 +563,16 @@ function Get-FileData {
             try {
                 # Use SharePoint List API to get all items with drive item details
                 $uri = "/v1.0/sites/$($Site.Id)/lists/$($list.Id)/items?expand=fields,driveItem&`$top=200"
-                $more = $true
-                $nextLink = $null
+                $nextLink = $uri
                 $filesInThisList = 0
-                
-                while ($more) {
+                while ($nextLink) {
                     try {
                         $resp = Invoke-WithRetry -ScriptBlock {
-                            if ($nextLink) {
-                                Invoke-MgGraphRequest -Method GET -Uri $nextLink
-                            } else {
-                                Invoke-MgGraphRequest -Method GET -Uri $uri
-                            }
+                            Invoke-MgGraphRequest -Method GET -Uri $nextLink
                         } -Activity "Get list items"
-                        
                         if (-not $resp.value -or $resp.value.Count -eq 0) {
-                            $more = $false
-                            continue
+                            break
                         }
-                        
                         foreach ($item in $resp.value) {
                             if ($item.driveItem -and $item.driveItem.file) {
                                 $isSystem = $false
@@ -720,10 +602,10 @@ function Get-FileData {
                                     FullPath = $fullPath
                                 }
                                 if ($isSystem) {
-                                    $systemFiles += $fileObj
+                                    $systemFiles.Add($fileObj) | Out-Null
                                     continue
                                 }
-                                $allFiles += $fileObj
+                                $allFiles.Add($fileObj) | Out-Null
                                 $folderPath = $parentPath
                                 if (-not $folderSizes.ContainsKey($folderPath)) {
                                     $folderSizes[$folderPath] = 0
@@ -735,16 +617,15 @@ function Get-FileData {
                                 Show-Progress -Activity "Analyzing Document Libraries" -Status "Processing: $($list.DisplayName) | Files found: $totalFiles | Current: $currentFileName ($filesInThisList)" -PercentComplete $percentComplete -CurrentOperation "$listIndex of $($docLibraries.Count) libraries"
                             }
                         }
-                        
-                        # Disable pagination for now due to PowerShell parsing issues
-                        $more = $false
-                        
-                        # Add small delay to avoid throttling
-                        Start-Sleep -Milliseconds (Get-Random -Minimum 100 -Maximum 300)
+                        # Check for next page link
+                        $nextLink = $resp.'@odata.nextLink'
+                        if ($nextLink) {
+                            Start-Sleep -Milliseconds (Get-Random -Minimum 100 -Maximum 300)
+                        }
                     }
                     catch {
-                        Write-Log "Failed to process list items: $_" -Level Error
-                        $more = $false
+                        Write-Log "Failed to process page of list items: $_" -Level Error
+                        $nextLink = $null
                     }
                 }
                 
@@ -759,8 +640,47 @@ function Get-FileData {
         
         $recycleBinSizeGB = 0
         try {
-            $recycleBinSizeGB = Get-SiteRecycleBinStorage -SiteId $Site.Id
-        } catch {}
+            # Try multiple approaches to get recycle bin storage
+            $recycleBinSize = 0
+            
+            # Approach 1: Try via Graph API with different endpoints
+            try {
+                $recycleBinItems = Invoke-MgGraphRequest -Method GET -Uri "/v1.0/sites/$($Site.Id)/drive/special/recycle" -ErrorAction SilentlyContinue
+                if ($recycleBinItems -and $recycleBinItems.quota -and $recycleBinItems.quota.used) {
+                    $recycleBinSize = $recycleBinItems.quota.used
+                }
+            } catch { }
+            
+            # Approach 2: Try alternative recycle bin endpoint
+            if ($recycleBinSize -eq 0) {
+                try {
+                    $recycleBinItems = Invoke-MgGraphRequest -Method GET -Uri "/v1.0/sites/$($Site.Id)/recyclebin" -ErrorAction SilentlyContinue
+                    if ($recycleBinItems -and $recycleBinItems.value) {
+                        $recycleBinSize = ($recycleBinItems.value | Measure-Object -Property size -Sum).Sum
+                    }
+                } catch { }
+            }
+            
+            # Approach 3: Try drive-specific recycle bin
+            if ($recycleBinSize -eq 0) {
+                try {
+                    $drives = Get-MgSiteDrive -SiteId $Site.Id -ErrorAction SilentlyContinue
+                    foreach ($drive in $drives) {
+                        try {
+                            $recycleBinItems = Invoke-MgGraphRequest -Method GET -Uri "/v1.0/drives/$($drive.Id)/special/recycle" -ErrorAction SilentlyContinue
+                            if ($recycleBinItems -and $recycleBinItems.quota -and $recycleBinItems.quota.used) {
+                                $recycleBinSize += $recycleBinItems.quota.used
+                            }
+                        } catch { }
+                    }
+                } catch { }
+            }
+            
+            $recycleBinSizeGB = [math]::Round($recycleBinSize / 1GB, 2)
+            
+        } catch {
+            Write-Log "Could not access recycle bin for site: $($Site.DisplayName)" -Level Debug
+        }
         $result = @{
             Files = $allFiles
             SystemFiles = $systemFiles
@@ -774,88 +694,11 @@ function Get-FileData {
         
         Write-Log "Completed site: $($Site.DisplayName) - Files: $($result.TotalFiles), Size: $($result.TotalSizeGB)GB" -Level Success
         
-        return $result
-    }
-    catch {
-        Write-Log "Failed to get file data for site $($Site.DisplayName): $_" -Level Error
-        return @{
-            Files = @()
-            FolderSizes = @{}
-            TotalFiles = 0
-            TotalSizeGB = 0
-        }
-    }
-}
-
-function Get-SiteStorageAndAccess {
-    param(
-        [Parameter(Mandatory=$true)]
-        $Site
-    )
-    
-    $siteInfo = @{
-        SiteName = $Site.DisplayName
-        SiteUrl = $Site.WebUrl
-        SiteId = $Site.Id
-        StorageGB = 0
-        Users = @()
-        ExternalGuests = @()
-        TopFiles = @()
-        TopFolders = @()
-    }
-    
-    try {
-        Write-Log "Getting storage and access for site: $($Site.DisplayName)" -Level Info
-        
-        # Get drives and storage
-        $drives = Get-MgSiteDrive -SiteId $Site.Id -WarningAction SilentlyContinue
-        $allFiles = @()
-        $folderSizes = @{}
-        
-        foreach ($drive in $drives) {
-            try {
-                $items = Get-MgDriveItemChild -DriveId $drive.Id -DriveItemId "root" -All -ErrorAction SilentlyContinue
-                if ($items) {
-                    foreach ($item in $items) {
-                        if ($item.File) {
-                            $allFiles += $item
-                            $folderPath = $item.ParentReference.Path
-                            if (-not $folderSizes.ContainsKey($folderPath)) { 
-                                $folderSizes[$folderPath] = 0 
-                            }
-                            $folderSizes[$folderPath] += $item.Size
-                        }
-                    }
-                }
-            } 
-            catch {
-                Write-Log "Could not access drive $($drive.Name): $_" -Level Warning
-            }
-        }
-        
-        $siteInfo.StorageGB = [math]::Round(($allFiles | Measure-Object -Property Size -Sum).Sum / 1GB, 2)
-        $siteInfo.TopFiles = $allFiles | Sort-Object Size -Descending | Select-Object -First 20 | ForEach-Object {
-            [PSCustomObject]@{
-                Name = $_.Name
-                SizeMB = [math]::Round($_.Size / 1MB, 2)
-                Path = $_.ParentReference.Path
-                Extension = [System.IO.Path]::GetExtension($_.Name).ToLower()
-            }
-        }
-        $siteInfo.TopFolders = $folderSizes.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 20 | ForEach-Object {
-            [PSCustomObject]@{
-                FolderPath = $_.Key
-                SizeGB = [math]::Round($_.Value / 1GB, 3)
-                SizeMB = [math]::Round($_.Value / 1MB, 2)
-            }
-        }
-        
         # Get user access (site permissions)
         $siteUsers = @()
         $externalGuests = @()
         try {
             $permissions = Invoke-WithRetry -ScriptBlock { Get-MgSitePermission -SiteId $Site.Id -All -ErrorAction SilentlyContinue } -Activity "Get site permissions"
-            
             foreach ($perm in $permissions) {
                 try {
                     if ($perm.Invitation) {
@@ -869,7 +712,6 @@ function Get-SiteStorageAndAccess {
                     elseif ($perm.GrantedToIdentitiesV2) {
                         foreach ($identity in $perm.GrantedToIdentitiesV2) {
                             $userType = if ($identity.User.UserType -eq "Guest") { "External Guest" } elseif ($identity.User.UserType -eq "Member") { "Internal" } else { $identity.User.UserType }
-                            
                             $userObj = [PSCustomObject]@{
                                 UserName = $identity.User.DisplayName
                                 UserEmail = $identity.User.Email
@@ -887,495 +729,59 @@ function Get-SiteStorageAndAccess {
                     Write-Log "Could not process permission: $_" -Level Warning
                 }
             }
-        } 
+        }
         catch {
             Write-Log "Could not get permissions for site $($Site.DisplayName): $_" -Level Warning
         }
         
-        $siteInfo.Users = $siteUsers
-        $siteInfo.ExternalGuests = $externalGuests
+        $result.Users = $siteUsers
+        $result.ExternalGuests = $externalGuests
         
         Write-Log "Completed storage and access for site: $($Site.DisplayName) - Users: $($siteUsers.Count), Guests: $($externalGuests.Count)" -Level Success
+        
+        return $result
     }
     catch {
         Write-Log "Failed to get site storage and access info: $_" -Level Error
-    }
-    
-    return $siteInfo
-}
-#endregion
-
-#region Permission and Access Analysis
-function Get-SiteUserAccessSummary {
-    param(
-        [Parameter(Mandatory=$true)]
-        $Site
-    )
-    
-    $owners = @()
-    $members = @()
-    
-    try {
-        Write-Log "Getting user access summary for site: $($Site.DisplayName)" -Level Info
-        
-        # Get site permissions using the correct Graph API
-        $permissions = Invoke-WithRetry -ScriptBlock { Get-MgSitePermission -SiteId $Site.Id -All -WarningAction SilentlyContinue } -Activity "Get site permissions"
-        
-        foreach ($perm in $permissions) {
-            try {
-                # Check if permission has user or group info
-                if ($perm.GrantedToIdentitiesV2) {
-                    foreach ($identity in $perm.GrantedToIdentitiesV2) {
-                        $user = $identity.User
-                        if ($user) {
-                            $userObj = [PSCustomObject]@{
-                                UserName = $user.DisplayName
-                                UserEmail = if ($user.Email) { $user.Email } else { $user.UserPrincipalName }
-                                Role = if ($perm.Roles) { ($perm.Roles -join ", ") } else { "Member" }
-                            }
-                            
-                            # Categorize based on role
-                            if ($perm.Roles -and ($perm.Roles -contains "owner" -or $perm.Roles -contains "fullControl")) {
-                                $owners += $userObj
-                            } else {
-                                $members += $userObj
-                            }
-                        }
-                    }
-                }
-                elseif ($perm.GrantedTo -and $perm.GrantedTo.User) {
-                    $user = $perm.GrantedTo.User
-                    $userObj = [PSCustomObject]@{
-                        UserName = $user.DisplayName
-                        UserEmail = if ($user.Email) { $user.Email } else { $user.UserPrincipalName }
-                        Role = if ($perm.Roles) { ($perm.Roles -join ", ") } else { "Member" }
-                    }
-                    
-                    # Categorize based on role
-                    if ($perm.Roles -and ($perm.Roles -contains "owner" -or $perm.Roles -contains "fullControl")) {
-                        $owners += $userObj
-                    } else {
-                        $members += $userObj
-                    }
-                }
-            }
-            catch {
-                Write-Log "Could not process permission entry: $_" -Level Warning
-            }
+        return @{
+            Files = @()
+            FolderSizes = @{}
+            TotalFiles = 0
+            TotalSizeGB = 0
+            Users = @()
+            ExternalGuests = @()
         }
-        
-        # Remove duplicates
-        $owners = $owners | Sort-Object UserEmail -Unique
-        $members = $members | Sort-Object UserEmail -Unique
-        
-        Write-Log "Found $($owners.Count) owners and $($members.Count) members for site: $($Site.DisplayName)" -Level Success
-    } 
-    catch {
-        Write-Log "Could not retrieve site user access for $($Site.DisplayName): $_" -Level Warning
-    }
-    
-    return @{ 
-        Owners = $owners
-        Members = $members 
     }
 }
 
-function Get-ParentFolderAccess {
-    param(
-        [Parameter(Mandatory=$true)]
-        $Site
-    )
-    
-    $folderAccess = @()
-    $processedFolders = @{}
-    
-    try {
-        Write-Log "Getting folder access for site: $($Site.DisplayName)" -Level Info
-        
-        # Get all drives for the site
-        $drives = Invoke-WithRetry -ScriptBlock { Get-MgSiteDrive -SiteId $Site.Id -WarningAction SilentlyContinue } -Activity "Get site drives"
-        $driveIndex = 0
-        
-        foreach ($drive in $drives) {
-            $driveIndex++
-            $percentComplete = [math]::Round(($driveIndex / $drives.Count) * 100, 1)
-            
-            # Progress bar for drive processing
-            Show-Progress -Activity "Analyzing Folder Permissions" -Status "Processing drive: $($drive.Name)" -PercentComplete $percentComplete -CurrentOperation "$driveIndex of $($drives.Count) drives"
-            
-            try {
-                # Get root folders only (first level)
-                $rootFolders = Invoke-WithRetry -ScriptBlock { 
-                    Get-MgDriveItemChild -DriveId $drive.Id -DriveItemId "root" -All -ErrorAction Stop | 
-                    Where-Object { $_.Folder }
-                } -Activity "Get drive root folders"
-                
-                foreach ($folder in $rootFolders) {
-                    if ($processedFolders.ContainsKey($folder.Id)) { continue }
-                    $processedFolders[$folder.Id] = $true
-                    
-                    try {
-                        $permissions = Invoke-WithRetry -ScriptBlock { Get-MgDriveItemPermission -DriveId $drive.Id -DriveItemId $folder.Id -All -ErrorAction Stop } -Activity "Get folder permissions"
-                        
-                        foreach ($perm in $permissions) {
-                            $roles = ($perm.Roles | Where-Object { $_ }) -join ", "
-                            
-                            if ($perm.GrantedToIdentitiesV2) {
-                                foreach ($identity in $perm.GrantedToIdentitiesV2) {
-                                    if ($identity.User.DisplayName) {
-                                        $folderAccess += [PSCustomObject]@{
-                                            FolderName = $folder.Name
-                                            FolderPath = $folder.ParentReference.Path + "/" + $folder.Name
-                                            UserName = $identity.User.DisplayName
-                                            UserEmail = $identity.User.Email
-                                            PermissionLevel = $roles
-                                            AccessType = if ($roles -match "owner|write") { 
-                                                "Full/Edit" 
-                                            } elseif ($roles -match "read") { 
-                                                "Read Only" 
-                                            } else { 
-                                                "Other" 
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            if ($perm.GrantedTo -and $perm.GrantedTo.User.DisplayName) {
-                                $folderAccess += [PSCustomObject]@{
-                                    FolderName = $folder.Name
-                                    FolderPath = $folder.ParentReference.Path + "/" + $folder.Name
-                                    UserName = $perm.GrantedTo.User.DisplayName
-                                    UserEmail = $perm.GrantedTo.User.Email
-                                    PermissionLevel = $roles
-                                    AccessType = if ($roles -match "owner|write") { 
-                                                "Full/Edit" 
-                                            } elseif ($roles -match "read") { 
-                                                "Read Only" 
-                                            } else { 
-                                                "Other" 
-                                            }
-                                }
-                            }
-                        }
-                    }
-                    catch {
-                        Write-Log "Could not get permissions for folder $($folder.Name): $_" -Level Warning
-                    }
-                }
-            }
-            catch {
-                Write-Log "Could not access drive $($drive.Name): $_" -Level Warning
-            }
-        }
-        
-        Stop-Progress -Activity "Analyzing Folder Permissions"
-        
-        # Remove duplicates (same user with same access to same folder)
-        $folderAccess = $folderAccess | Sort-Object FolderName, UserName, PermissionLevel -Unique
-        
-        Write-Log "Found $($folderAccess.Count) folder access entries for site: $($Site.DisplayName)" -Level Success
-    }
-    catch {
-        Stop-Progress -Activity "Analyzing Folder Permissions"
-        Write-Log "Failed to get folder access for site $($Site.DisplayName): $_" -Level Error
-        $folderAccess = @([PSCustomObject]@{
-            FolderName = "Permission Error"
-            FolderPath = "Check permissions"
-            UserName = "Unable to retrieve data"
-            UserEmail = "Requires additional permissions"
-            PermissionLevel = "N/A"
-            AccessType = "Error"
-        })
-    }
-    
-    return $folderAccess
-}
-#endregion
-
-#region Recycle Bin Analysis
-function Get-SiteRecycleBinStorage {
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$SiteId
-    )
-    
-    try {
-        # Try to get recycle bin items using Graph API
-        $recycleBinItems = @()
-        
-        # Method 1: Try direct Graph API call
-        try {
-            $recycleBinItems = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/sites/$SiteId/recycleBin" -Method GET -ErrorAction SilentlyContinue
-            if ($recycleBinItems.value) {
-                $recycleBinItems = $recycleBinItems.value
-            }
-        } catch {
-            # Method 2: Try alternative approach with drives
-            try {
-                $drives = Get-MgSiteDrive -SiteId $SiteId -ErrorAction SilentlyContinue
-                foreach ($drive in $drives) {
-                    try {
-                        $driveRecycleBin = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/drives/$($drive.Id)/recycleBin" -Method GET -ErrorAction SilentlyContinue
-                        if ($driveRecycleBin.value) {
-                            $recycleBinItems += $driveRecycleBin.value
-                        }
-                    } catch {
-                        # Skip this drive if recycle bin access fails
-                    }
-                }
-            } catch {
-                # Recycle bin access not available for this site
-            }
-        }
-        
-        if ($recycleBinItems.Count -gt 0) {
-            $totalSize = ($recycleBinItems | Where-Object { $_.size } | Measure-Object -Property size -Sum -ErrorAction SilentlyContinue).Sum
-            return [math]::Round($totalSize / 1GB, 3)
-        }
-        
-        return 0
-    } catch {
-        return 0
-    }
-}
-#endregion
-
-#region Personal OneDrive Analysis
-function Get-PersonalOneDriveSites {
-    param(
-        [Parameter(Mandatory=$true)]
-        $Sites
-    )
-    
-    $oneDriveSites = $Sites | Where-Object { 
-        $_.WebUrl -like "*-my.sharepoint.com/personal/*" -or 
-        $_.WebUrl -like "*/personal/*" -or 
-        $_.WebUrl -like "*mysites*" -or
-        $_.Name -like "*OneDrive*" -or
-        $_.DisplayName -like "*OneDrive*"
-    }
-    
-    return $oneDriveSites
-}
-
-function Get-PersonalOneDriveDetails {
-    param(
-        [Parameter(Mandatory=$true)]
-        $OneDriveSites
-    )
-    
-    $oneDriveDetails = @()
-    $processedCount = 0
-    
-    foreach ($site in $OneDriveSites) {
-        $processedCount++
-        $percentComplete = [math]::Round(($processedCount / $OneDriveSites.Count) * 100, 1)
-        
-        Show-Progress -Activity "Analyzing Personal OneDrive Sites" -Status "Processing: $($site.DisplayName)" -PercentComplete $percentComplete -CurrentOperation "$processedCount of $($OneDriveSites.Count) OneDrive sites"
-        
-        try {
-            # Extract user name from URL
-            $userName = "Unknown User"
-            if ($site.WebUrl -match "/personal/([^/]+)") {
-                $userPart = $matches[1] -replace "_", "@"
-                $userName = $userPart -replace "([^@]+)@([^@]+)", '$1@$2'
-            }
-            
-            # Get storage size
-            $drives = Get-MgSiteDrive -SiteId $site.Id -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-            $totalSize = 0
-            $fileCount = 0
-            
-            foreach ($drive in $drives) {
-                try {
-                    $items = Get-MgDriveItemChild -DriveId $drive.Id -DriveItemId "root" -All -ErrorAction SilentlyContinue
-                    if ($items) {
-                        $driveSize = ($items | Where-Object { $_.File } | Measure-Object -Property Size -Sum).Sum
-                        $totalSize += $driveSize
-                        $fileCount += ($items | Where-Object { $_.File }).Count
-                    }
-                } catch {
-                    # Silent error handling for individual drives
-                }
-            }
-            
-            # Get sharing/access information
-            $sharedWithUsers = @()
-            try {
-                $permissions = Get-MgSitePermission -SiteId $site.Id -All -ErrorAction SilentlyContinue
-                foreach ($perm in $permissions) {
-                    if ($perm.GrantedToIdentitiesV2) {
-                        foreach ($identity in $perm.GrantedToIdentitiesV2) {
-                            if ($identity.User -and $identity.User.DisplayName -ne $userName) {
-                                $sharedWithUsers += [PSCustomObject]@{
-                                    UserName = $identity.User.DisplayName
-                                    UserEmail = $identity.User.Email
-                                    AccessType = ($perm.Roles -join ", ")
-                                }
-                            }
-                        }
-                    }
-                    elseif ($perm.GrantedTo -and $perm.GrantedTo.User -and $perm.GrantedTo.User.DisplayName -ne $userName) {
-                        $sharedWithUsers += [PSCustomObject]@{
-                            UserName = $perm.GrantedTo.User.DisplayName
-                            UserEmail = $perm.GrantedTo.User.Email
-                            AccessType = ($perm.Roles -join ", ")
-                        }
-                    }
-                }
-            } catch {
-                # Silent error handling for permissions
-            }
-            
-            $oneDriveDetails += [PSCustomObject]@{
-                SiteName = $site.DisplayName
-                UserName = $userName
-                SiteUrl = $site.WebUrl
-                SizeGB = [math]::Round($totalSize / 1GB, 3)
-                SizeMB = [math]::Round($totalSize / 1MB, 2)
-                FileCount = $fileCount
-                SharedWithCount = $sharedWithUsers.Count
-                SharedWithUsers = ($sharedWithUsers.UserName -join "; ")
-                SharedWithEmails = ($sharedWithUsers.UserEmail -join "; ")
-                AccessDetails = ($sharedWithUsers | ForEach-Object { "$($_.UserName) ($($_.AccessType))" }) -join "; "
-                LastAnalyzed = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-            }
-        }
-        catch {
-            Write-Log "Could not analyze OneDrive site: $($site.DisplayName) - $_" -Level Warning
-            $oneDriveDetails += [PSCustomObject]@{
-                SiteName = $site.DisplayName
-                UserName = "Analysis Failed"
-                SiteUrl = $site.WebUrl
-                SizeGB = 0
-                SizeMB = 0
-                FileCount = 0
-                SharedWithCount = 0
-                SharedWithUsers = "Unable to retrieve data"
-                SharedWithEmails = "Check permissions"
-                AccessDetails = "Error: $_"
-                LastAnalyzed = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-            }
-        }
-    }
-    
-    Stop-Progress -Activity "Analyzing Personal OneDrive Sites"
-    return $oneDriveDetails
-}
-#endregion
-
-#region Batch Processing
-function Get-DrivesBatch {
-    param(
-        [Parameter(Mandatory=$true)]
-        [array]$SiteIds
-    )
-    
-    $batchRequests = @()
-    $responses = @()
-    $batchSize = 20  # Microsoft Graph batch limit is 20 per request
-    
-    for ($i = 0; $i -lt $SiteIds.Count; $i += $batchSize) {
-        $batch = $SiteIds[$i..([Math]::Min($i+$batchSize-1, $SiteIds.Count-1))]
-        $batchRequests = @()
-        $reqId = 1
-        
-        foreach ($siteId in $batch) {
-            $batchRequests += @{
-                id = "$reqId"
-                method = "GET"
-                url = "/sites/$siteId/drives"
-            }
-            $reqId++
-        }
-        
-        $body = @{ requests = $batchRequests } | ConvertTo-Json -Depth 6
-        $result = Invoke-MgGraphRequest -Method POST -Uri "/v1.0/`$batch" -Body $body -ContentType "application/json"
-        $responses += $result.responses
-    }
-    
-    return $responses
-}
-
-function Get-DriveItemsBatch {
-    param(
-        [Parameter(Mandatory=$true)]
-        [array]$DriveIds,
-        
-        [string]$ParentId = "root"
-    )
-    
+function Get-SiteStorageBatch {
+    param($sites)
+    $details = @()
+    $siteIds = $sites | ForEach-Object { $_.Id }
     $batchSize = 20
-    $responses = @()
-    
-    for ($i = 0; $i -lt $DriveIds.Count; $i += $batchSize) {
-        $batch = $DriveIds[$i..([Math]::Min($i+$batchSize-1, $DriveIds.Count-1))]
+    for ($i = 0; $i -lt $siteIds.Count; $i += $batchSize) {
+        $batch = $siteIds[$i..([Math]::Min($i+$batchSize-1, $siteIds.Count-1))]
         $batchRequests = @()
         $reqId = 1
-        
-        foreach ($driveId in $batch) {
-            $batchRequests += @{
-                id = "$reqId"
-                method = "GET"
-                url = "/drives/$driveId/items/$ParentId/children"
-            }
+        foreach ($siteId in $batch) {
+            $batchRequests += @{ id = "$reqId"; method = "GET"; url = "/sites/$siteId/storage" }
             $reqId++
         }
-        
         $body = @{ requests = $batchRequests } | ConvertTo-Json -Depth 6
         $result = Invoke-MgGraphRequest -Method POST -Uri "/v1.0/`$batch" -Body $body -ContentType "application/json"
-        $responses += $result.responses
-    }
-    
-    return $responses
-}
-
-function Get-FileDataBatch {
-    param(
-        [Parameter(Mandatory=$true)]
-        [array]$DrivesBatchResponses
-    )
-    
-    $allFiles = @()
-    $folderSizes = @{}
-    
-    foreach ($resp in $DrivesBatchResponses) {
-        if ($resp.status -eq 200 -and $resp.body.value) {
-            foreach ($item in $resp.body.value) {
-                if ($item.file) {
-                    # Calculate full path+name length (Path + "/" + Name)
-                    $fullPath = ($item.parentReference.path + "/" + $item.name).Replace("//","/")
-                    $pathLength = $fullPath.Length
-                    
-                    $allFiles += [PSCustomObject]@{
-                        Name = $item.name
-                        Size = [long]$item.size
-                        SizeGB = [math]::Round($item.size / 1GB, 3)
-                        SizeMB = [math]::Round($item.size / 1MB, 2)
-                        Path = $item.parentReference.path
-                        Drive = $item.parentReference.driveId
-                        Extension = [System.IO.Path]::GetExtension($item.name).ToLower()
-                        PathLength = $pathLength
-                        FullPath = $fullPath
-                    }
-                    
-                    $folderPath = $item.parentReference.path
-                    if (-not $folderSizes.ContainsKey($folderPath)) { 
-                        $folderSizes[$folderPath] = 0 
-                    }
-                    $folderSizes[$folderPath] += $item.size
+        foreach ($resp in $result.responses) {
+            if ($resp.status -eq 200 -and $resp.body) {
+                $originalSiteId = $batch[$([int]$resp.id - 1)]
+                $details += [PSCustomObject]@{
+                    SiteId       = $originalSiteId
+                    QuotaGB      = [math]::Round($resp.body.quota.total / 1GB, 2)
+                    UsedGB       = [math]::Round($resp.body.quota.used / 1GB, 2)
+                    RecycleBinGB = [math]::Round($resp.body.storage.recycleBin.total / 1GB, 2)
                 }
             }
         }
     }
-    
-    return @{
-        Files = $allFiles
-        FolderSizes = $folderSizes
-        TotalFiles = $allFiles.Count
-        TotalSizeGB = [math]::Round(($allFiles | Measure-Object -Property Size -Sum).Sum / 1GB, 2)
-    }
+    return $details
 }
 #endregion
 
@@ -1473,374 +879,50 @@ function Export-ExcelWorksheet {
         
         [string]$Title,
         
-        [string]$TableStyle = "Light1",
-        
-        [hashtable]$ConditionalFormatting = @{},
+        [string]$TableStyle = "Medium2",
         
         [switch]$AutoSize,
         
-        [switch]$FreezeTopRow,
-        
         [switch]$BoldTopRow,
         
-        [string]$HeaderColor,
+        [switch]$FreezeTopRow,
         
-        [string]$HeaderTextColor,
+        [string]$HeaderColor = "Black",
         
-        [array]$AlternateRowColors = @("LightGray", "White"),
+        [string]$HeaderTextColor = "Yellow",
         
-        [switch]$PassThru
+        [string]$ChartType,
+        
+        [string]$ChartColumn,
+        
+        [string]$ChartTitle
     )
-    
+    if (-not $Data -or $Data.Count -eq 0) {
+        Write-Log "No data to export for worksheet '$WorksheetName'. Skipping export." -Level Warning
+        return
+    }
     try {
-        # Sanitize all string data in $Data before export
-        function Convert-ExcelString {
-            param([string]$Value)
-            if ($null -eq $Value) { return "" }
-            # Remove non-printable and invalid XML characters
-            return ($Value -replace '[\x00-\x08\x0B\x0C\x0E-\x1F]', '')
-        }
-        
-        # If $Data is an array of objects, sanitize all string properties
-        if ($Data -is [System.Collections.IEnumerable]) {
-            $sanitizedData = @()
-            foreach ($row in $Data) {
-                $newRow = @{}
-                foreach ($prop in $row.PSObject.Properties) {
-                    if ($prop.Value -is [string]) {
-                        $newRow[$prop.Name] = Convert-ExcelString $prop.Value
-                    } else {
-                        $newRow[$prop.Name] = $prop.Value
-                    }
-                }
-                $sanitizedData += [PSCustomObject]$newRow
-            }
-        } else {
-            $sanitizedData = $Data
-        }
-        
         $params = @{
             Path = $Path
             WorksheetName = $WorksheetName
+            TableStyle = $TableStyle
             AutoSize = $AutoSize
-            PassThru = $PassThru
+            BoldTopRow = $BoldTopRow
+            FreezeTopRow = $FreezeTopRow
+            HeaderColor = $HeaderColor
+            HeaderTextColor = $HeaderTextColor
         }
-        
-        if ($Title) {
-            $params.Add("Title", (Convert-ExcelString $Title))
-            $params.Add("TitleBold", $true)
-            $params.Add("TitleSize", 16)
-        }
-        
-        if ($TableStyle) {
-            $params.Add("TableStyle", $TableStyle)
-        }
-        
-        $excel = $sanitizedData | Export-Excel @params
-        
-        # Apply conditional formatting if specified
-        if ($ConditionalFormatting.Count -gt 0) {
-            $ws = $excel.Workbook.Worksheets[$WorksheetName]
-            if ($ws) {
-                foreach ($cf in $ConditionalFormatting.GetEnumerator()) {
-                    $range = $cf.Key
-                    $format = $cf.Value
-                    
-                    if ($format -is [hashtable]) {
-                        $ruleType = $format.RuleType
-                        $condition = $format.Condition
-                        $color = $format.Color
-                        
-                        if ($ruleType -eq "ContainsText" -and $condition -and $color) {
-                            Add-ConditionalFormatting -Worksheet $ws -Range $range -RuleType ContainsText -Condition $condition -ForegroundColor $color
-                        }
-                        elseif ($ruleType -eq "Expression" -and $condition -and $color) {
-                            Add-ConditionalFormatting -Worksheet $ws -Range $range -RuleType Expression -Condition $condition -ForegroundColor $color
-                        }
-                    }
-                }
+        if ($Title) { $params.Title = $Title }
+        Import-Module ImportExcel -ErrorAction SilentlyContinue
+        $Data | Export-Excel @params
+        if ($ChartType -and $ChartColumn -and $ChartTitle) {
+            if ($Data.Count -gt 0) {
+                # Add chart logic here if needed
             }
         }
-        
-        # Apply formatting options
-        if ($HeaderColor -or $HeaderTextColor -or $BoldTopRow -or $AlternateRowColors -or $FreezeTopRow) {
-            $ws = $excel.Workbook.Worksheets[$WorksheetName]
-            if ($ws) {
-                # Get the range of the header row
-                $headerRow = 1
-                $headerRange = $ws.Cells[$headerRow, 1, $headerRow, $ws.Dimension.End.Column]
-                
-                # Apply header formatting
-                if ($HeaderColor) {
-                    $headerRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
-                    $headerRange.Style.Fill.BackgroundColor.SetColor($HeaderColor)
-                }
-                
-                if ($HeaderTextColor) {
-                    $headerRange.Style.Font.Color.SetColor($HeaderTextColor)
-                }
-                
-                if ($BoldTopRow) {
-                    $headerRange.Style.Font.Bold = $true
-                    $headerRange.Style.Font.Size = 12
-                }
-                
-                # Apply alternate row colors
-                if ($AlternateRowColors.Count -ge 2) {
-                    $dataRows = $ws.Dimension.Rows
-                    for ($row = 2; $row -le $dataRows; $row++) {
-                        $rowRange = $ws.Cells[$row, 1, $row, $ws.Dimension.End.Column]
-                        $colorIndex = ($row - 2) % $AlternateRowColors.Count
-                        
-                        try {
-                            $color = $AlternateRowColors[$colorIndex]
-                            if ($color -is [string]) {
-                                $color = [System.Drawing.Color]::FromName($color)
-                            }
-                            
-                            $rowRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
-                            $rowRange.Style.Fill.BackgroundColor.SetColor($color)
-                            
-                            # Set contrasting text color
-                            if ($color.GetBrightness() -lt 0.5) {
-                                $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::White)
-                            } else {
-                                $rowRange.Style.Font.Color.SetColor([System.Drawing.Color]::Black)
-                            }
-                            
-                            $rowRange.Style.Font.Bold = $true
-                            $rowRange.Style.Font.Size = 10
-                        }
-                        catch {
-                            # Skip if color is invalid
-                        }
-                    }
-                }
-                
-                # Freeze top row if requested
-                if ($FreezeTopRow) {
-                    $ws.View.FreezeRows(1)
-                }
-            }
-        }
-        
-        if ($PassThru) {
-            return $excel
-        } else {
-            Close-ExcelPackage $excel
-            return $null
-        }
+    } catch {
+        Write-Log "Failed to export worksheet '$WorksheetName': $_" -Level Error
     }
-    catch {
-        Write-Log "Failed to export Excel worksheet: $_" -Level Error
-        throw
-    }
-}
-
-function New-ExcelReport {
-    param(
-        [Parameter(Mandatory=$true)]
-        $FileData,
-        
-        [Parameter(Mandatory=$true)]
-        $FolderAccess,
-        
-        [Parameter(Mandatory=$true)]
-        $Site,
-        
-        [Parameter(Mandatory=$true)]
-        [string]$FileName
-    )
-    
-    Write-Log "Creating Excel report: $FileName" -Level Info
-    
-    try {
-        # ...existing code...
-        # Add tenant-wide storage breakdown worksheet
-        if ($Site.DisplayName -eq 'Tenant' -or $Site.DisplayName -eq 'All Sites') {
-            $summaryData = @(
-                [PSCustomObject]@{ Category = "Active Files"; StorageGB = $FileData.TotalSizeGB; SiteCount = $FileData.TotalFiles },
-                [PSCustomObject]@{ Category = "System/Hidden Files"; StorageGB = $FileData.SystemSizeGB; SiteCount = $FileData.SystemFiles.Count },
-                [PSCustomObject]@{ Category = "Recycle Bin"; StorageGB = $FileData.RecycleBinSizeGB; SiteCount = $FileData.TotalFiles },
-                [PSCustomObject]@{ Category = "Total"; StorageGB = $FileData.TotalWithRecycleBinGB; SiteCount = $FileData.TotalFiles }
-            )
-            $safeName = Format-WorksheetName -Name "Tenant Storage Breakdown"
-            $summaryData | Export-ExcelWorksheet -Path $FileName -WorksheetName $safeName -Title "SharePoint Tenant Storage Breakdown (Active, System, Recycle Bin)" -TableStyle "Medium2" -AutoSize -BoldTopRow -FreezeTopRow
-        }
-        $top20Files = $FileData.Files | Sort-Object Size -Descending | Select-Object -First 20 |
-            Select-Object Name, SizeMB, Path, Drive, Extension
-        
-        $top10Folders = $FileData.FolderSizes.GetEnumerator() | 
-            Sort-Object Value -Descending | Select-Object -First 10 |
-            ForEach-Object { $_ }
-        
-        # Storage breakdown by location for pie chart
-        $storageBreakdown = $FileData.FolderSizes.GetEnumerator() | 
-            Sort-Object Value -Descending | Select-Object -First 15 |
-            ForEach-Object { $_ }
-        
-        # Parent folder access summary (group and summarize by permission level)
-        $accessSummary = $FolderAccess | Group-Object PermissionLevel | ForEach-Object {
-            [PSCustomObject]@{
-                PermissionLevel = $_.Name
-                UserCount = ($_.Group | Select-Object -ExpandProperty UserName | Sort-Object -Unique).Count
-                Users = ($_.Group | Select-Object -ExpandProperty UserName | Sort-Object -Unique) -join ", "
-                FolderCount = ($_.Group | Select-Object -ExpandProperty FolderName | Sort-Object -Unique).Count
-                Folders = ($_.Group | Select-Object -ExpandProperty FolderName | Sort-Object -Unique) -join ", "
-            }
-        }
-        
-        # Site summary
-        $siteSummary = @([PSCustomObject]@{
-            SiteName = $Site.DisplayName
-            SiteUrl = $Site.WebUrl
-            TotalFiles = $FileData.TotalFiles
-            TotalSizeGB = $FileData.TotalSizeGB
-            TotalFolders = $FileData.FolderSizes.Count
-            UniquePermissionLevels = ($FolderAccess.PermissionLevel | Sort-Object -Unique).Count
-            ReportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        })
-        
-        # Create Excel file with multiple worksheets
-        $safeName = Format-WorksheetName -Name "Summary"
-        $excel = $siteSummary | Export-ExcelWorksheet -Path $FileName -WorksheetName $safeName -AutoSize -PassThru
-        
-        # Only export sheets if they have data
-        if ($top20Files.Count -gt 0) {
-            $safeName = Format-WorksheetName -Name "Top 20 Files"
-            $top20Files | Export-ExcelWorksheet -Path $FileName -WorksheetName $safeName -AutoSize -ExcelPackage $excel
-        } else {
-            $safeName = Format-WorksheetName -Name "Top 20 Files"
-            $emptyData = @([PSCustomObject]@{Message = "No files found in this site"})
-            $emptyData | Export-ExcelWorksheet -Path $FileName -WorksheetName $safeName -AutoSize -ExcelPackage $excel
-        }
-        
-        if ($top10Folders.Count -gt 0) {
-            $safeName = Format-WorksheetName -Name "Top 10 Folders"
-            $top10Folders | Export-ExcelWorksheet -Path $FileName -WorksheetName $safeName -AutoSize -ExcelPackage $excel
-        } else {
-            $safeName = Format-WorksheetName -Name "Top 10 Folders"
-            $emptyData = @([PSCustomObject]@{Message = "No folders found in this site"})
-            $emptyData | Export-ExcelWorksheet -Path $FileName -WorksheetName $safeName -AutoSize -ExcelPackage $excel
-        }
-        
-        if ($storageBreakdown.Count -gt 0) {
-            $safeName = Format-WorksheetName -Name "Storage Breakdown"
-            $storageBreakdown | Export-ExcelWorksheet -Path $FileName -WorksheetName $safeName -AutoSize -ExcelPackage $excel
-        } else {
-            $safeName = Format-WorksheetName -Name "Storage Breakdown"
-            $emptyData = @([PSCustomObject]@{Message = "No storage data available"})
-            $emptyData | Export-ExcelWorksheet -Path $FileName -WorksheetName $safeName -AutoSize -ExcelPackage $excel
-        }
-        
-        if ($FolderAccess.Count -gt 0) {
-            $safeName = Format-WorksheetName -Name "Folder Access"
-            
-            # Add conditional formatting to highlight external guests in red
-            $conditionalFormatting = @{
-                "D2:D$(($FolderAccess.Count) + 1)" = @{
-                    RuleType = "ContainsText"
-                    Condition = "External Guest"
-                    Color = "Red"
-                }
-            }
-            
-            $FolderAccess | Export-ExcelWorksheet -Path $FileName -WorksheetName $safeName -AutoSize -ConditionalFormatting $conditionalFormatting -ExcelPackage $excel
-        } else {
-            $safeName = Format-WorksheetName -Name "Folder Access"
-            $emptyData = @([PSCustomObject]@{Message = "No folder access data available"})
-            $emptyData | Export-ExcelWorksheet -Path $FileName -WorksheetName $safeName -AutoSize -ExcelPackage $excel
-        }
-        
-        if ($accessSummary.Count -gt 0) {
-            $safeName = Format-WorksheetName -Name "Access Summary"
-            $accessSummary | Export-ExcelWorksheet -Path $FileName -WorksheetName $safeName -AutoSize -ExcelPackage $excel
-        } else {
-            $safeName = Format-WorksheetName -Name "Access Summary"
-            $emptyData = @([PSCustomObject]@{Message = "No access summary data available"})
-            $emptyData | Export-ExcelWorksheet -Path $FileName -WorksheetName $safeName -AutoSize -ExcelPackage $excel
-        }
-        
-        Close-ExcelPackage $excel
-        
-        Write-Log "Excel report created successfully!" -Level Success
-        Write-Log "`nReport Contents:" -Level Info
-        Write-Log "- Summary: Overall site statistics" -Level Info
-        Write-Log "- Top 20 Files: Largest files by size" -Level Info  
-        Write-Log "- Top 10 Folders: Largest folders by size" -Level Info
-        Write-Log "- Storage Breakdown: Space usage by location" -Level Info
-        Write-Log "- Folder Access: Parent folder permissions" -Level Info
-        Write-Log "- Access Summary: Users grouped by permission level" -Level Info
-    }
-    catch {
-        Write-Log "Failed to create Excel report: $_" -Level Error
-        throw
-    }
-}
-
-function Export-ExcelReport {
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$OutputPath,
-        [Parameter(Mandatory=$true)]
-        [array]$SiteStorageData,
-        [array]$SiteDetails,
-        [array]$DocumentLibrarySites,
-        [array]$MarketingStorage,
-        [hashtable]$SiteTopFolders, # key: site name, value: array of top folders
-        [hashtable]$SiteTopFiles    # key: site name, value: array of top files
-    )
-    # Combine all worksheet storage data for summary
-    $combinedStorage = @()
-    $combinedStorage += $SiteStorageData
-    $combinedStorage += $DocumentLibrarySites
-    $combinedStorage += $MarketingStorage
-    # Remove duplicates by Location
-    $combinedStorage = $combinedStorage | Group-Object Location | ForEach-Object { $_.Group[0] }
-    # Export combined summary worksheet with pie chart
-    Export-ExcelWorksheet -Path $OutputPath -WorksheetName "Combined Storage Summary" -Data $combinedStorage -Title "Combined Storage Breakdown" -TableStyle "Medium2" -AutoSize -PassThru | ForEach-Object {
-        $ws = $_.Workbook.Worksheets["Combined Storage Summary"]
-        if ($ws) {
-            # Add pie chart for storage breakdown
-            $chart = $ws.Drawings.AddChart("StoragePieChart", 'Pie')
-            $chart.SetPosition(1,0,3,0)
-            $chart.SetSize(400,300)
-            $chart.Series.Add("B3:B$($combinedStorage.Count+2)", "A3:A$($combinedStorage.Count+2)")
-            $chart.Title.Text = "Storage Breakdown (All Worksheets Combined)"
-        }
-    }
-    # Export other worksheets
-    Export-ExcelWorksheet -Path $OutputPath -WorksheetName "Site Summary with Details" -Data $SiteDetails -Title "Site Summary with Details" -TableStyle "Medium2" -AutoSize
-    Export-ExcelWorksheet -Path $OutputPath -WorksheetName "Detailed Storage Breakdown" -Data $SiteStorageData -Title "Detailed Storage Breakdown" -TableStyle "Medium2" -AutoSize
-    Export-ExcelWorksheet -Path $OutputPath -WorksheetName "Document Library Sites" -Data $DocumentLibrarySites -Title "Document Library Sites" -TableStyle "Medium2" -AutoSize
-    Export-ExcelWorksheet -Path $OutputPath -WorksheetName "Marketing Storage" -Data $MarketingStorage -Title "Storage Breakdown for Marketing" -TableStyle "Medium2" -AutoSize
-    # For the 10 largest sites, add their top 10 files/folders and pie chart to their worksheet
-    $topSites = $SiteStorageData | Sort-Object SizeGB -Descending | Select-Object -First 10
-    foreach ($site in $topSites) {
-        $siteName = Format-WorksheetName $site.Location
-        $siteFolders = $SiteTopFolders[$siteName]
-        $siteFiles = $SiteTopFiles[$siteName]
-        $siteData = @()
-        $siteData += $site
-        if ($siteFolders) {
-            $siteData += $siteFolders | Select-Object @{Name='Type';Expression={'Folder'}}, Name, SizeGB
-        }
-        if ($siteFiles) {
-            $siteData += $siteFiles | Select-Object @{Name='Type';Expression={'File'}}, Name, SizeGB
-        }
-        Export-ExcelWorksheet -Path $OutputPath -WorksheetName $siteName -Data $siteData -Title "Storage Breakdown for $($site.Location)" -TableStyle "Medium2" -AutoSize -PassThru | ForEach-Object {
-            $ws = $_.Workbook.Worksheets[$siteName]
-            if ($ws) {
-                # Add pie chart for site storage breakdown
-                $chart = $ws.Drawings.AddChart("SitePieChart", 'Pie')
-                $chart.SetPosition(1,0,3,0)
-                $chart.SetSize(400,300)
-                $chart.Series.Add("C3:C$($siteData.Count+2)", "B3:B$($siteData.Count+2)")
-                $chart.Title.Text = "Storage Breakdown for $($site.Location)"
-            }
-        }
-    }
-    # Remove global Top Folders/Files worksheets; info is now in individual site worksheets
 }
 #endregion
 
@@ -1855,17 +937,32 @@ function Get-SiteSummaries {
     
     Write-Log "Getting site summaries for $($Sites.Count) sites..." -Level Info
     
-    # Filter all SharePoint library sites with valid Ids
+    # Filter sites to include both SharePoint and OneDrive personal sites with valid Ids
     $filteredSites = $Sites | Where-Object {
+        $_.Id -and ($_.Id -ne "")
+    }
+    
+    # Separate SharePoint sites from OneDrive personal sites
+    $sharePointSites = $filteredSites | Where-Object {
         $_.WebUrl -notlike "*-my.sharepoint.com/personal/*" -and
         $_.WebUrl -notlike "*/personal/*" -and
         $_.WebUrl -notlike "*mysites*" -and
         $_.Name -notlike "*OneDrive*" -and
-        $_.DisplayName -notlike "*OneDrive*" -and
-        $_.Id -and ($_.Id -ne "")
+        $_.DisplayName -notlike "*OneDrive*"
     }
     
-    Write-Log "Filtered SharePoint library sites to process: $($filteredSites.Count)" -Level Info
+    $oneDrivePersonalSites = $filteredSites | Where-Object {
+        $_.WebUrl -like "*-my.sharepoint.com/personal/*" -or
+        $_.WebUrl -like "*/personal/*" -or
+        $_.WebUrl -like "*mysites*" -or
+        $_.Name -like "*OneDrive*" -or
+        $_.DisplayName -like "*OneDrive*"
+    }
+    
+    Write-Log "Filtered SharePoint library sites to process: $($sharePointSites.Count)" -Level Info
+    Write-Log "Filtered OneDrive personal sites to process: $($oneDrivePersonalSites.Count)" -Level Info
+    Write-Log "Total sites to process: $($filteredSites.Count)" -Level Info
+    
     $filteredSites | Select-Object -First 10 | ForEach-Object {
         Write-Log "Id: '$($_.Id)', DisplayName: '$($_.DisplayName)', WebUrl: '$($_.WebUrl)'" -Level Debug
     }
@@ -1894,33 +991,61 @@ function Get-SiteSummaries {
         }
         
         $storageGB = 0
+        $recycleBinGB = 0
         
         try {
-            # Get drives for the site
-            $drives = Get-MgSiteDrive -SiteId $siteId -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+            # Approach 1: Try to get site storage usage via Graph API
+            try {
+                $siteStorageInfo = Invoke-MgGraphRequest -Method GET -Uri "/v1.0/sites/$siteId/drive" -ErrorAction SilentlyContinue
+                if ($siteStorageInfo -and $siteStorageInfo.quota -and $siteStorageInfo.quota.used) {
+                    $storageGB = [math]::Round($siteStorageInfo.quota.used / 1GB, 2)
+                }
+            } catch { }
             
-            # Calculate total storage
-            foreach ($drive in $drives) {
-                try {
-                    $driveInfo = Get-MgDrive -DriveId $drive.Id -ErrorAction SilentlyContinue
-                    if ($driveInfo) {
-                        $storageGB += [math]::Round($driveInfo.Quota.Used / 1GB, 2)
-                    }
-                } catch {
-                    # If quota not available, try to calculate from items
+            # Approach 2: If no storage from site drive, try all drives for the site
+            if ($storageGB -eq 0) {
+                $drives = Get-MgSiteDrive -SiteId $siteId -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+                
+                foreach ($drive in $drives) {
                     try {
-                        $items = Get-MgDriveItemChild -DriveId $drive.Id -DriveItemId "root" -All -ErrorAction SilentlyContinue
-                        if ($items) {
-                            $driveSize = ($items | Measure-Object -Property Size -Sum).Sum
-                            $storageGB += [math]::Round($driveSize / 1GB, 2)
+                        $driveInfo = Get-MgDrive -DriveId $drive.Id -ErrorAction SilentlyContinue
+                        if ($driveInfo -and $driveInfo.Quota -and $driveInfo.Quota.Used) {
+                            $storageGB += [math]::Round($driveInfo.Quota.Used / 1GB, 2)
                         }
                     } catch {
-                        # Silently handle errors
+                        # If quota not available, try to calculate from root folder size
+                        try {
+                            $rootFolder = Get-MgDriveItem -DriveId $drive.Id -DriveItemId "root" -ErrorAction SilentlyContinue
+                            if ($rootFolder -and $rootFolder.Size) {
+                                $storageGB += [math]::Round($rootFolder.Size / 1GB, 2)
+                            }
+                        } catch {
+                            # Silently handle errors
+                        }
                     }
+                    
+                    # Try to get recycle bin size for this drive
+                    try {
+                        $recycleBinItems = Invoke-MgGraphRequest -Method GET -Uri "/v1.0/drives/$($drive.Id)/special/recycle" -ErrorAction SilentlyContinue
+                        if ($recycleBinItems -and $recycleBinItems.size) {
+                            $recycleBinGB += [math]::Round($recycleBinItems.size / 1GB, 2)
+                        }
+                    } catch { }
                 }
             }
+            
+            # Approach 3: Try site-level recycle bin if drive-level failed
+            if ($recycleBinGB -eq 0) {
+                try {
+                    $siteRecycleBin = Invoke-MgGraphRequest -Method GET -Uri "/v1.0/sites/$siteId/drive/special/recycle" -ErrorAction SilentlyContinue
+                    if ($siteRecycleBin -and $siteRecycleBin.size) {
+                        $recycleBinGB = [math]::Round($siteRecycleBin.size / 1GB, 2)
+                    }
+                } catch { }
+            }
+            
         } catch {
-            Write-Log "Error getting storage for site $displayName`: $_" -Level Warning
+            # Silently handle any unexpected errors
         }
         
         return [PSCustomObject]@{
@@ -1929,6 +1054,8 @@ function Get-SiteSummaries {
             SiteName = $displayName
             SiteType = $siteType
             StorageGB = $storageGB
+            RecycleBinGB = $recycleBinGB
+            TotalStorageGB = ($storageGB + $recycleBinGB)
             StorageBytes = $storageGB * 1GB
             WebUrl = $webUrl
             IsOneDrive = ($siteType -eq "OneDrive Personal")
@@ -2035,10 +1162,15 @@ function Get-SiteDetails {
                     SiteType = $siteSummary.SiteType
                     TotalFiles = $fileData.TotalFiles
                     TotalSizeGB = $siteSummary.StorageGB
+                    RecycleBinGB = $siteSummary.RecycleBinGB
+                    TotalStorageGB = $siteSummary.TotalStorageGB
                     TotalFolders = $fileData.FolderSizes.Count
-                    UniquePermissionLevels = $null  # Skipped
+                    UniquePermissionLevels = $null
                     OwnersCount = $userAccess.Owners.Count
                     MembersCount = $userAccess.Members.Count
+                    Owners = $userAccess.Owners
+                    Members = $userAccess.Members
+                    ExternalGuests = $fileData.ExternalGuests
                     ReportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
                 }
             }
@@ -2054,10 +1186,15 @@ function Get-SiteDetails {
                 SiteType = $siteSummary.SiteType
                 TotalFiles = $null
                 TotalSizeGB = $siteSummary.StorageGB
+                RecycleBinGB = $siteSummary.RecycleBinGB
+                TotalStorageGB = $siteSummary.TotalStorageGB
                 TotalFolders = $null
                 UniquePermissionLevels = $null
                 OwnersCount = $userAccess.Owners.Count
                 MembersCount = $userAccess.Members.Count
+                Owners = $userAccess.Owners
+                Members = $userAccess.Members
+                ExternalGuests = @()
                 ReportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             }
         }
@@ -2096,7 +1233,10 @@ function Export-ComprehensiveExcelReport {
         [hashtable]$SiteStorageStats,
         
         [Parameter(Mandatory=$true)]
-        [hashtable]$SitePieCharts
+        [hashtable]$SitePieCharts,
+        
+        [Parameter(Mandatory=$false)]
+        [array]$ComprehensiveSiteDetails = @()
     )
     
     Write-Log "Generating Excel report..." -Level Info
@@ -2111,60 +1251,55 @@ function Export-ComprehensiveExcelReport {
     try {
         # Create comprehensive SharePoint Storage Pie Chart Data (including recycle bins and personal sites)
         Show-Progress -Activity "Generating Excel Report" -Status "Creating comprehensive storage analysis..." -PercentComplete 5
-        
+
         $comprehensiveStorageData = @()
         $totalTenantStorage = 0
         $recycleBinStorage = 0
         $personalOneDriveStorage = 0
         $sharePointSitesStorage = 0
-        
-        # Calculate storage breakdown
-        foreach ($siteSummary in $SiteSummaries) {
-            $totalTenantStorage += $siteSummary.StorageGB
+
+        # Calculate storage breakdown using AllSiteSummaries which has the correct data
+        foreach ($siteSummary in $AllSiteSummaries) {
+            $storageGB = if ($siteSummary.TotalSizeGB) { $siteSummary.TotalSizeGB } else { 0 }
+            $recycleBinGB = if ($siteSummary.RecycleBinGB) { $siteSummary.RecycleBinGB } else { 0 }
+            $totalStorageGB = if ($siteSummary.TotalStorageGB) { $siteSummary.TotalStorageGB } else { $storageGB + $recycleBinGB }
             
-            if ($siteSummary.IsOneDrive) {
-                $personalOneDriveStorage += $siteSummary.StorageGB
+            $totalTenantStorage += $storageGB
+            $recycleBinStorage += $recycleBinGB
+            
+            if ($siteSummary.SiteType -eq "OneDrive Personal") {
+                $personalOneDriveStorage += $storageGB
             } else {
-                $sharePointSitesStorage += $siteSummary.StorageGB
+                $sharePointSitesStorage += $storageGB
             }
             
-            # Add individual site to comprehensive data
             $comprehensiveStorageData += [PSCustomObject]@{
-                Category = if ($siteSummary.IsOneDrive) { "Personal OneDrive" } else { "SharePoint Site" }
+                Category = if ($siteSummary.SiteType -eq "OneDrive Personal") { "Personal OneDrive" } else { "SharePoint Site" }
                 SiteName = $siteSummary.SiteName
-                StorageGB = $siteSummary.StorageGB
-                Percentage = if ($totalTenantStorage -gt 0) { [math]::Round(($siteSummary.StorageGB / $totalTenantStorage) * 100, 2) } else { 0 }
+                StorageGB = $storageGB
+                RecycleBinGB = $recycleBinGB
+                TotalStorageGB = $totalStorageGB
+                Percentage = if (($totalTenantStorage + $recycleBinStorage) -gt 0) { [math]::Round(($totalStorageGB / ($totalTenantStorage + $recycleBinStorage)) * 100, 2) } else { 0 }
                 SiteUrl = $siteSummary.SiteUrl
                 SiteType = $siteSummary.SiteType
             }
         }
-        
-        # Get recycle bin storage (attempt to retrieve from all sites)
-        Write-Log "Attempting to calculate recycle bin storage..." -Level Info
-        foreach ($siteSummary in $SiteSummaries) {
-            try {
-                $recycleBinSizeForSite = Get-SiteRecycleBinStorage -SiteId $siteSummary.SiteId
-                if ($recycleBinSizeForSite -gt 0) {
-                    $recycleBinStorage += $recycleBinSizeForSite
-                }
-            } catch {
-                Write-Log "Could not access recycle bin for site: $($siteSummary.SiteName)" -Level Debug
-            }
-        }
-        
+
+
+
         # Create pie chart summary data
         $pieChartData = @(
             [PSCustomObject]@{
                 Category = "SharePoint Sites"
                 StorageGB = $sharePointSitesStorage
                 Percentage = if ($totalTenantStorage -gt 0) { [math]::Round(($sharePointSitesStorage / $totalTenantStorage) * 100, 2) } else { 0 }
-                SiteCount = ($SiteSummaries | Where-Object { -not $_.IsOneDrive }).Count
+                SiteCount = ($AllSiteSummaries | Where-Object { $_.SiteType -ne "OneDrive Personal" }).Count
             },
             [PSCustomObject]@{
                 Category = "Personal OneDrive"
                 StorageGB = $personalOneDriveStorage
                 Percentage = if ($totalTenantStorage -gt 0) { [math]::Round(($personalOneDriveStorage / $totalTenantStorage) * 100, 2) } else { 0 }
-                SiteCount = ($SiteSummaries | Where-Object { $_.IsOneDrive }).Count
+                SiteCount = ($AllSiteSummaries | Where-Object { $_.SiteType -eq "OneDrive Personal" }).Count
             },
             [PSCustomObject]@{
                 Category = "Recycle Bins"
@@ -2173,129 +1308,403 @@ function Export-ComprehensiveExcelReport {
                 SiteCount = "All Sites"
             }
         )
-        
-        # Create comprehensive site details with users and access information
-        Show-Progress -Activity "Generating Excel Report" -Status "Compiling comprehensive site details..." -PercentComplete 10
-        
-        $comprehensiveSiteDetails = @()
-        foreach ($siteSummary in $SiteSummaries) {
-            $site = $siteSummary.Site
-            
-            # Get detailed user access for this site
-            try {
-                $userAccess = Get-SiteUserAccessSummary -Site $site
-                $folderAccess = @()
-                
-                # Get folder access permissions
-                try {
-                    $folderAccess = Get-ParentFolderAccess -Site $site
-                } catch {
-                    Write-Log "Could not get folder access for site: $($site.DisplayName)" -Level Debug
+                StorageGB = $recycleBinStorage
+                Percentage = if (($totalTenantStorage + $recycleBinStorage) -gt 0) { [math]::Round(($recycleBinStorage / ($totalTenantStorage + $recycleBinStorage)) * 100, 2) } else { 0 }
+                SiteCount = "All Sites"
+            }
+        )
+
+        # Use the comprehensive site details passed from main function, or build if not provided
+        if ($ComprehensiveSiteDetails -and $ComprehensiveSiteDetails.Count -gt 0) {
+            Write-Log "Using pre-built comprehensive site details with $($ComprehensiveSiteDetails.Count) sites" -Level Info
+            # Update with user access counts from AllSiteSummaries
+            foreach ($detail in $ComprehensiveSiteDetails) {
+                $matchingSiteDetail = $AllSiteSummaries | Where-Object { $_.SiteName -eq $detail.'Site name' } | Select-Object -First 1
+                if ($matchingSiteDetail) {
+                    $detail.OwnersCount = $matchingSiteDetail.OwnersCount
+                    $detail.MembersCount = $matchingSiteDetail.MembersCount
                 }
-                
-                # Compile all users and groups with their access details
-                $allUsersString = ""
-                $allOwnersString = ""
-                $accessTypesString = ""
-                $foldersAccessString = ""
-                
-                if ($userAccess.Owners.Count -gt 0) {
-                    $allOwnersString = ($userAccess.Owners | ForEach-Object { "$($_.DisplayName) ($($_.UserEmail))" }) -join "; "
-                }
-                
-                if ($userAccess.Members.Count -gt 0) {
-                    $membersString = ($userAccess.Members | ForEach-Object { "$($_.DisplayName) ($($_.UserEmail)) - $($_.Role)" }) -join "; "
-                    $allUsersString = $membersString
-                }
-                
-                if ($folderAccess.Count -gt 0) {
-                    $accessTypesString = ($folderAccess.PermissionLevel | Sort-Object -Unique) -join ", "
-                    $foldersAccessString = ($folderAccess | ForEach-Object { "$($_.FolderPath) - $($_.PermissionLevel)" }) -join "; "
-                }
-                
-                $comprehensiveSiteDetails += [PSCustomObject]@{
-                    SiteName = $site.DisplayName
-                    SiteUrl = $site.WebUrl
-                    SiteType = $siteSummary.SiteType
-                    StorageGB = $siteSummary.StorageGB
-                    TotalFiles = if ($siteSummary.SiteId -in $SiteSummaries.SiteId) { 
-                        ($AllTopFiles | Where-Object { $_.SiteName -eq $site.DisplayName }).Count 
-                    } else { "Not analyzed (not in top 10)" }
-                    OwnersCount = $userAccess.Owners.Count
-                    MembersCount = $userAccess.Members.Count
-                    AllOwners = $allOwnersString
-                    AllUsersAndGroups = $allUsersString
-                    AccessTypes = $accessTypesString
-                    FoldersWithAccess = $foldersAccessString
-                    UniquePermissionLevels = if ($folderAccess.Count -gt 0) { ($folderAccess.PermissionLevel | Sort-Object -Unique).Count } else { 0 }
-                    LastAnalyzed = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                    IsTopSite = if ($siteSummary.SiteId -in $SiteSummaries.SiteId) { "Yes" } else { "No" }
-                }
-            } catch {
-                Write-Log "Failed to compile comprehensive details for site $($site.DisplayName): $_" -Level Error
-                
-                # Add basic info even if detailed analysis fails
-                $comprehensiveSiteDetails += [PSCustomObject]@{
-                    SiteName = $site.DisplayName
-                    SiteUrl = $site.WebUrl
-                    SiteType = $siteSummary.SiteType
-                    StorageGB = $siteSummary.StorageGB
-                    TotalFiles = "Error retrieving data"
-                    OwnersCount = 0
-                    MembersCount = 0
-                    AllOwners = "Error retrieving data"
-                    AllUsersAndGroups = "Error retrieving data"
-                    AccessTypes = "Error retrieving data"
-                    FoldersWithAccess = "Error retrieving data"
-                    UniquePermissionLevels = 0
-                    LastAnalyzed = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                    IsTopSite = if ($siteSummary.SiteId -in $SiteSummaries.SiteId) { "Yes" } else { "No" }
+            }
+        } else {
+            Write-Log "Building comprehensive site details from SiteSummaries..." -Level Warning
+            $ComprehensiveSiteDetails = @()
+            foreach ($siteSummary in $SiteSummaries) {
+                $site = $siteSummary.Site
+                $ComprehensiveSiteDetails += [PSCustomObject]@{
+                    'Site name' = $site.DisplayName
+                    'URL' = $site.WebUrl
+                    'Teams' = $site.Teams
+                    'Channel sites' = $site.ChannelSites
+                    'IBMode' = $site.IBMode
+                    'Storage used (GB)' = $siteSummary.StorageGB
+                    'Recycle bin (GB)' = $siteSummary.RecycleBinGB
+                    'Total storage (GB)' = $siteSummary.TotalStorageGB
+                    'Primary admin' = $site.PrimaryAdmin
+                    'Hub' = $site.Hub
+                    'Template' = $site.Template
+                    'Last activity (UTC)' = $site.LastActivityUTC
+                    'Date created' = $site.CreatedDate
+                    'Created by' = $site.CreatedBy
+                    'Storage limit (GB)' = $site.StorageLimitGB
+                    'Storage used (%)' = $site.StorageUsedPercent
+                    'Microsoft 365 group' = $site.Microsoft365Group
+                    'Files viewed or edited' = $site.FilesViewedOrEdited
+                    'Page views' = $site.PageViews
+                    'Page visits' = $site.PageVisits
+                    'Files' = $site.Files
+                    'Sensitivity' = $site.Sensitivity
+                    'External sharing' = $site.ExternalSharing
+                    'OwnersCount' = $siteSummary.OwnersCount
+                    'MembersCount' = $siteSummary.MembersCount
+                    'ReportDate' = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
                 }
             }
         }
-        
-        # Merge first four worksheets into one: Pie Chart, Site Summary with Details, Detailed Storage Breakdown, Document Library Sites
-        $mergedData = @()
-        # Add pie chart summary data as first rows
-        foreach ($row in $pieChartData) { $mergedData += $row }
-        # Add comprehensive site details
-        foreach ($row in $comprehensiveSiteDetails) { $mergedData += $row }
-        # Add detailed storage breakdown
-        foreach ($row in ($comprehensiveStorageData | Sort-Object StorageGB -Descending)) { $mergedData += $row }
-        # Add Document Library Sites summary
-        $docLibrarySummaries = $AllSiteSummaries | Where-Object { $_.SiteType -eq "SharePoint Site" }
-        foreach ($row in $docLibrarySummaries) { $mergedData += $row }
-        # Export merged worksheet with pie chart
-        $excel = Export-ExcelWorksheet -Data $mergedData -Path $ExcelFileName -WorksheetName "SharePoint Storage Overview" -AutoSize -TableStyle "Light1" -Title "SharePoint Tenant Storage Overview (Includes Recycle Bins)" -PassThru -HeaderColor "Black" -HeaderTextColor "Yellow" -AlternateRowColors @("DarkGray", "LightGray")
-        # Add pie chart to worksheet
-        $ws = $excel.Workbook.Worksheets["SharePoint Storage Overview"]
-        if ($ws -and $pieChartData.Count -gt 0) {
-            $chart = $ws.Drawings.AddChart("StoragePieChart", 'Pie')
-            $chart.SetPosition(1,0,3,0)
-            $chart.SetSize(400,300)
-            $chart.Series.Add("C3:C$($pieChartData.Count+2)", "A3:A$($pieChartData.Count+2)")
-            $chart.Title.Text = "Storage Breakdown (SharePoint, OneDrive, Recycle Bin)"
+
+        # Add OneDrive Personal Sites Combined Summary as a single entry
+        $oneDriveSites = $SiteSummaries | Where-Object { $_.IsOneDrive }
+        if ($oneDriveSites.Count -gt 0) {
+            $totalOneDriveStorage = ($oneDriveSites | Measure-Object -Property StorageGB -Sum).Sum
+            $totalOneDriveSiteCount = $oneDriveSites.Count
+            
+            $ComprehensiveSiteDetails += [PSCustomObject]@{
+                'Site name' = "All OneDrive Personal Sites (Combined)"
+                'URL' = "Multiple OneDrive Personal Sites"
+                'Teams' = ""
+                'Channel sites' = ""
+                'IBMode' = ""
+                'Storage used (GB)' = $totalOneDriveStorage
+                'Recycle bin (GB)' = ($oneDriveSites | Measure-Object -Property RecycleBinGB -Sum).Sum
+                'Total storage (GB)' = ($oneDriveSites | Measure-Object -Property TotalStorageGB -Sum).Sum
+                'Primary admin' = "Individual Users"
+                'Hub' = ""
+                'Template' = "OneDrive Personal"
+                'Last activity (UTC)' = ""
+                'Date created' = ""
+                'Created by' = ""
+                'Storage limit (GB)' = ""
+                'Storage used (%)' = ""
+                'Microsoft 365 group' = ""
+                'Files viewed or edited' = ""
+                'Page views' = ""
+                'Page visits' = ""
+                'Files' = ""
+                'Sensitivity' = ""
+                'External sharing' = ""
+                'OwnersCount' = $totalOneDriveSiteCount
+                'MembersCount' = 0
+                'ReportDate' = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            }
+            
+            Write-Log "Added OneDrive Personal Sites combined entry: $totalOneDriveSiteCount sites with $totalOneDriveStorage GB total storage" -Level Info
         }
-        Close-ExcelPackage $excel
+
+        # Create combined data for main worksheet: comprehensive site details + tenant pie chart summary
+        $combinedMainWorksheetData = @()
         
-        # Export top 10 sites details: combine pie chart and top 20 files/folders per site
-        if ($SitePieCharts.Count -gt 0) {
+        # Add the pie chart summary data at the top
+        $combinedMainWorksheetData += [PSCustomObject]@{
+            'Site name' = "=== TENANT STORAGE BREAKDOWN ==="
+            'URL' = ""
+            'Teams' = ""
+            'Channel sites' = ""
+            'IBMode' = ""
+            'Storage used (GB)' = ""
+            'Recycle bin (GB)' = ""
+            'Total storage (GB)' = ""
+            'Primary admin' = ""
+            'Hub' = ""
+            'Template' = ""
+            'Last activity (UTC)' = ""
+            'Date created' = ""
+            'Created by' = ""
+            'Storage limit (GB)' = ""
+            'Storage used (%)' = ""
+            'Microsoft 365 group' = ""
+            'Files viewed or edited' = ""
+            'Page views' = ""
+            'Page visits' = ""
+            'Files' = ""
+            'Sensitivity' = ""
+            'External sharing' = ""
+            'OwnersCount' = ""
+            'MembersCount' = ""
+            'ReportDate' = ""
+        }
+        
+        # Add pie chart data
+        foreach ($chartData in $pieChartData) {
+            $combinedMainWorksheetData += [PSCustomObject]@{
+                'Site name' = "📊 $($chartData.Category)"
+                'URL' = ""
+                'Teams' = ""
+                'Channel sites' = ""
+                'IBMode' = ""
+                'Storage used (GB)' = $chartData.StorageGB
+                'Recycle bin (GB)' = ""
+                'Total storage (GB)' = $chartData.StorageGB
+                'Primary admin' = ""
+                'Hub' = ""
+                'Template' = ""
+                'Last activity (UTC)' = ""
+                'Date created' = ""
+                'Created by' = ""
+                'Storage limit (GB)' = ""
+                'Storage used (%)' = "$($chartData.Percentage)%"
+                'Microsoft 365 group' = ""
+                'Files viewed or edited' = ""
+                'Page views' = ""
+                'Page visits' = ""
+                'Files' = ""
+                'Sensitivity' = ""
+                'External sharing' = ""
+                'OwnersCount' = if ($chartData.SiteCount -eq "All Sites") { "" } else { $chartData.SiteCount }
+                'MembersCount' = ""
+                'ReportDate' = ""
+            }
+        }
+        
+        # Add separator
+        $combinedMainWorksheetData += [PSCustomObject]@{
+            'Site name' = "=== INDIVIDUAL SITES ==="
+            'URL' = ""
+            'Teams' = ""
+            'Channel sites' = ""
+            'IBMode' = ""
+            'Storage used (GB)' = ""
+            'Recycle bin (GB)' = ""
+            'Total storage (GB)' = ""
+            'Primary admin' = ""
+            'Hub' = ""
+            'Template' = ""
+            'Last activity (UTC)' = ""
+            'Date created' = ""
+            'Created by' = ""
+            'Storage limit (GB)' = ""
+            'Storage used (%)' = ""
+            'Microsoft 365 group' = ""
+            'Files viewed or edited' = ""
+            'Page views' = ""
+            'Page visits' = ""
+            'Files' = ""
+            'Sensitivity' = ""
+            'External sharing' = ""
+            'OwnersCount' = ""
+            'MembersCount' = ""
+            'ReportDate' = ""
+        }
+        
+        # Add all site details
+        $combinedMainWorksheetData += $ComprehensiveSiteDetails
+
+        # Export merged worksheet with comprehensive site details and pie chart data
+        $combinedMainWorksheetData | Export-Excel -Path $ExcelFileName -WorksheetName "SharePoint Storage Overview" -AutoSize -TableStyle "Light1" -Title "SharePoint Tenant Storage Overview (Includes Pie Chart & Recycle Bins)"
+        
+        Write-Log "SharePoint Storage Overview worksheet created with $($combinedMainWorksheetData.Count) entries (pie chart + sites)" -Level Info
+
+        # Worksheet 2: User & Group Access Overview
+        $userAccessRows = @()
+        foreach ($siteDetail in $AllSiteSummaries) {
+            $siteName = $siteDetail.SiteName
+            $siteUrl = $siteDetail.SiteUrl
+            # Owners
+            if ($siteDetail.OwnersCount -gt 0 -and $siteDetail.Owners) {
+                foreach ($owner in $siteDetail.Owners) {
+                    $row = [PSCustomObject]@{
+                        'User/Group' = $owner.DisplayName
+                        'Email' = $owner.UserEmail
+                        'Type' = $owner.UserType
+                        'Role' = $owner.Role
+                        'Site' = $siteName
+                        'Site URL' = $siteUrl
+                        'Access' = 'Owner/Admin'
+                        'Object' = 'Site'
+                    }
+                    $userAccessRows += $row
+                }
+            }
+            # Members
+            if ($siteDetail.MembersCount -gt 0 -and $siteDetail.Members) {
+                foreach ($member in $siteDetail.Members) {
+                    $row = [PSCustomObject]@{
+                        'User/Group' = $member.DisplayName
+                        'Email' = $member.UserEmail
+                        'Type' = $member.UserType
+                        'Role' = $member.Role
+                        'Site' = $siteName
+                        'Site URL' = $siteUrl
+                        'Access' = $member.Role
+                        'Object' = 'Site'
+                    }
+                    $userAccessRows += $row
+                }
+            }
+            # External Guests
+            if ($siteDetail.ExternalGuests) {
+                foreach ($guest in $siteDetail.ExternalGuests) {
+                    $row = [PSCustomObject]@{
+                        'User/Group' = $guest.UserName
+                        'Email' = $guest.UserEmail
+                        'Type' = 'External Guest'
+                        'Role' = $guest.AccessType
+                        'Site' = $siteName
+                        'Site URL' = $siteUrl
+                        'Access' = $guest.AccessType
+                        'Object' = 'Site'
+                        'Highlight' = 'Red'
+                    }
+                    $userAccessRows += $row
+                }
+            }
+        }
+        # Export user/group access worksheet
+        if ($userAccessRows -and $userAccessRows.Count -gt 0) {
+            $userAccessRows | Export-Excel -Path $ExcelFileName -WorksheetName "User & Group Access Overview" -AutoSize -TableStyle "Medium2" -Title "All Users, Groups, Members, and Guests with Access"
+            Write-Log "User & Group Access Overview worksheet created with $($userAccessRows.Count) access entries" -Level Info
+        } else {
+            # Create empty worksheet with headers if no data
+            $emptyUserAccess = @([PSCustomObject]@{
+                'User/Group' = "No access data available"
+                'Email' = ""
+                'Type' = ""
+                'Role' = ""
+                'Site' = ""
+                'Site URL' = ""
+                'Access' = ""
+                'Object' = ""
+            })
+            $emptyUserAccess | Export-Excel -Path $ExcelFileName -WorksheetName "User & Group Access Overview" -AutoSize -TableStyle "Medium2" -Title "All Users, Groups, Members, and Guests with Access"
+            Write-Log "User & Group Access Overview worksheet created with placeholder data (no user access data found)" -Level Warning
+        }
+
+        # Worksheet 3: OneDrive Personal Sites Details
+        $oneDrivePersonalRows = @()
+        foreach ($siteSummary in $SiteSummaries | Where-Object { $_.IsOneDrive }) {
+            $site = $siteSummary.Site
+            $oneDrivePersonalRows += [PSCustomObject]@{
+                'User Name' = if ($site.DisplayName -match "OneDrive - (.+)") { $matches[1] } else { $site.DisplayName }
+                'Site Name' = $site.DisplayName
+                'URL' = $site.WebUrl
+                'Storage Used (GB)' = $siteSummary.StorageGB
+                'Storage Used (%)' = if ($site.StorageLimitGB -and $site.StorageLimitGB -gt 0) { [math]::Round(($siteSummary.StorageGB / $site.StorageLimitGB) * 100, 2) } else { "Unknown" }
+                'Storage Limit (GB)' = $site.StorageLimitGB
+                'Last Activity (UTC)' = $site.LastActivityUTC
+                'Date Created' = $site.CreatedDate
+                'Files Count' = $site.Files
+                'External Sharing' = $site.ExternalSharing
+                'Site Type' = $siteSummary.SiteType
+                'Report Date' = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            }
+        }
+        
+        if ($oneDrivePersonalRows.Count -gt 0) {
+            $oneDrivePersonalRows | Export-Excel -Path $ExcelFileName -WorksheetName "OneDrive Personal Sites" -AutoSize -TableStyle "Light1" -Title "OneDrive Personal Sites Storage and Details"
+            Write-Log "OneDrive Personal Sites worksheet created with $($oneDrivePersonalRows.Count) personal sites" -Level Info
+        } else {
+            Write-Log "No OneDrive Personal sites found to create worksheet" -Level Warning
+        }
+
+        # Export site-specific worksheets with pie charts and detailed analysis
+        if ($SitePieCharts.Count -gt 0 -and $AllTopFiles -and $AllTopFolders) {
             foreach ($siteName in $SitePieCharts.Keys) {
                 $safeName = Format-WorksheetName "$siteName Storage"
                 $sitePieData = $SitePieCharts[$siteName]
+                
                 # Get top 20 files and folders for this site
-                $topFiles = $AllTopFiles | Where-Object { $_.SiteName -eq $siteName } | Sort-Object Size -Descending | Select-Object -First 20
-                $topFolders = $AllTopFolders | Where-Object { $_.SiteName -eq $siteName } | Sort-Object SizeGB -Descending | Select-Object -First 20
-                # Combine pie chart data and top files/folders into one worksheet
-                $combinedSiteData = @()
-                foreach ($row in $sitePieData) { $combinedSiteData += $row }
-                foreach ($row in $topFiles) { $combinedSiteData += $row }
-                foreach ($row in $topFolders) { $combinedSiteData += $row }
-                $excel = Export-ExcelWorksheet -Data $combinedSiteData -Path $ExcelFileName -WorksheetName $safeName -AutoSize -TableStyle "Light1" -Title "Storage Breakdown and Top 20 Files/Folders for $siteName" -PassThru
-                Close-ExcelPackage $excel
+                $topFiles = @()
+                $topFolders = @()
+                if ($AllTopFiles) {
+                    $topFiles = $AllTopFiles | Where-Object { $_.SiteName -eq $siteName } | Sort-Object Size -Descending | Select-Object -First 20
+                }
+                if ($AllTopFolders) {
+                    $topFolders = $AllTopFolders | Where-Object { $_.SiteName -eq $siteName } | Sort-Object SizeGB -Descending | Select-Object -First 20
+                }
+                
+                # Create comprehensive site worksheet data with clear sections
+                $siteWorksheetData = @()
+                
+                # Section 1: Site Storage Breakdown Pie Chart Data
+                $siteWorksheetData += [PSCustomObject]@{
+                    'Section' = "SITE STORAGE BREAKDOWN (PIE CHART DATA)"
+                    'Category/Location' = "Location"
+                    'Size (GB)' = "Size (GB)"
+                    'Type' = "Chart Data"
+                    'Details' = "Top 10 Folders by Size"
+                }
+                
+                foreach ($folder in $sitePieData) {
+                    $siteWorksheetData += [PSCustomObject]@{
+                        'Section' = "Storage Breakdown"
+                        'Category/Location' = $folder.Location
+                        'Size (GB)' = $folder.SizeGB
+                        'Type' = "Folder"
+                        'Details' = "Folder Storage"
+                    }
+                }
+                
+                # Add spacer row
+                $siteWorksheetData += [PSCustomObject]@{
+                    'Section' = ""
+                    'Category/Location' = ""
+                    'Size (GB)' = ""
+                    'Type' = ""
+                    'Details' = ""
+                }
+                
+                # Section 2: Top 20 Largest Files
+                $siteWorksheetData += [PSCustomObject]@{
+                    'Section' = "TOP 20 LARGEST FILES"
+                    'Category/Location' = "File Name"
+                    'Size (GB)' = "Size (GB)"
+                    'Type' = "File Type"
+                    'Details' = "File Path"
+                }
+                
+                foreach ($file in $topFiles) {
+                    $siteWorksheetData += [PSCustomObject]@{
+                        'Section' = "Large Files"
+                        'Category/Location' = $file.Name
+                        'Size (GB)' = [math]::Round($file.Size / 1GB, 3)
+                        'Type' = if ($file.Name -match '\.([^.]+)$') { $matches[1].ToUpper() } else { "Unknown" }
+                        'Details' = $file.Path
+                    }
+                }
+                
+                # Add spacer row
+                $siteWorksheetData += [PSCustomObject]@{
+                    'Section' = ""
+                    'Category/Location' = ""
+                    'Size (GB)' = ""
+                    'Type' = ""
+                    'Details' = ""
+                }
+                
+                # Section 3: Top 20 Largest Folders
+                $siteWorksheetData += [PSCustomObject]@{
+                    'Section' = "TOP 20 LARGEST FOLDERS"
+                    'Category/Location' = "Folder Name"
+                    'Size (GB)' = "Size (GB)"
+                    'Type' = "Folder Type"
+                    'Details' = "Folder Path"
+                }
+                
+                foreach ($folder in $topFolders) {
+                    $siteWorksheetData += [PSCustomObject]@{
+                        'Section' = "Large Folders"
+                        'Category/Location' = $folder.Name
+                        'Size (GB)' = $folder.SizeGB
+                        'Type' = "Folder"
+                        'Details' = $folder.Path
+                    }
+                }
+                
+                # Export the comprehensive site worksheet
+                if ($siteWorksheetData.Count -gt 0) {
+                    $siteWorksheetData | Export-Excel -Path $ExcelFileName -WorksheetName $safeName -AutoSize -TableStyle "Light1" -Title "Comprehensive Storage Analysis for $siteName"
+                }
             }
         }
-        
+
         Write-Log "Excel report created successfully: $ExcelFileName" -Level Success
         return $true
     }
@@ -2305,6 +1714,26 @@ function Export-ComprehensiveExcelReport {
     }
 }
 #endregion
+
+function Initialize-Modules {
+    $importErrorList = @()
+    try { Import-Module Microsoft.Graph.Sites -ErrorAction Stop; Write-Log "Loaded Microsoft.Graph.Sites module" -Level Success } catch { $importErrorList += "Microsoft.Graph.Sites: $_" }
+    try { Import-Module Microsoft.Graph.Files -ErrorAction Stop; Write-Log "Loaded Microsoft.Graph.Files module" -Level Success } catch { $importErrorList += "Microsoft.Graph.Files: $_" }
+    try { Import-Module Microsoft.Graph.Users -ErrorAction SilentlyContinue; Write-Log "Loaded Microsoft.Graph.Users module" -Level Success } catch { Write-Log "Microsoft.Graph.Users module not available: $_" -Level Warning; $importErrorList += "Microsoft.Graph.Users: $_" }
+    try { Import-Module Microsoft.Graph.Identity.DirectoryManagement -ErrorAction Stop; Write-Log "Loaded Microsoft.Graph.Identity.DirectoryManagement module" -Level Success } catch { $importErrorList += "Microsoft.Graph.Identity.DirectoryManagement: $_" }
+    try { Import-Module ImportExcel -ErrorAction Stop; Write-Log "Loaded ImportExcel module" -Level Success } catch { $importErrorList += "ImportExcel: $_" }
+    if ($importErrorList.Count -gt 0) {
+        Write-Log "Some modules failed to load. Attempting to force update..." -Level Warning
+        foreach ($moduleError in $importErrorList) {
+            $moduleName = $moduleError.Split(':')[0]
+            Write-Log "Force updating module: $moduleName" -Level Info
+            Install-OrUpdateModule -ModuleName $moduleName -MinimumVersion "2.0.0" -Force
+        }
+        Write-Log "Modules were force updated. Please restart PowerShell and run the script again." -Level Warning
+        return $false
+    }
+    return $true
+}
 
 #region Main Function
 function Main {
@@ -2318,12 +1747,16 @@ function Main {
         }
         
         # Connect to Microsoft Graph
+        if (-not $ClientId) { $ClientId = '278b9af9-888d-4344-93bb-769bdd739249' }
+        if (-not $TenantId) { $TenantId = 'ca0711e2-e703-4f4e-9099-17d97863211c' }
+        if (-not $CertificateThumbprint) { $CertificateThumbprint = '2E2502BB1EDB8F36CF9DE50936B283BDD22D5BAD' }
         Connect-ToGraph -ClientId $ClientId -TenantId $TenantId -CertificateThumbprint $CertificateThumbprint
         
         # Get tenant name
         $script:tenantName = Get-TenantName
         
-        # Create filename based on tenant name and date
+        # Create date string and filename
+        $script:dateStr = Get-Date -Format "yyyyMMdd"
         $defaultFileName = "SharePointAudit-AllSites-$($script:tenantName)-$($script:dateStr).xlsx"
         
         # Get save file path from user dialog or use provided path
@@ -2347,6 +1780,7 @@ function Main {
         Write-Log "Found $($sites.Count) total sites to analyze (including SharePoint sites and OneDrive personal sites)..." -Level Info
         
         # Get site summaries with storage information
+        if (-not $ParallelLimit -or $ParallelLimit -lt 1) { $ParallelLimit = 1 }
         $siteSummaries = Get-SiteSummaries -Sites $sites -ParallelLimit $ParallelLimit
         if ($siteSummaries.Count -eq 0) {
             Write-Log "No valid site summaries were generated. Exiting." -Level Warning
@@ -2362,24 +1796,82 @@ function Main {
         # Identify top 10 largest sites
         $topSites = $siteSummaries | Sort-Object StorageBytes -Descending | Select-Object -First 10
         
+        # Build comprehensive site details with all admin CSV columns BEFORE getting detailed info
+        Write-Log "Building comprehensive site details for Excel export..." -Level Info
+        $comprehensiveSiteDetails = @()
+        foreach ($siteSummary in $siteSummaries) {
+            $site = $siteSummary.Site
+            $comprehensiveSiteDetails += [PSCustomObject]@{
+                'Site name' = $site.DisplayName
+                'URL' = $site.WebUrl
+                'Teams' = $site.Teams
+                'Channel sites' = $site.ChannelSites
+                'IBMode' = $site.IBMode
+                'Storage used (GB)' = $siteSummary.StorageGB
+                'Recycle bin (GB)' = $siteSummary.RecycleBinGB
+                'Total storage (GB)' = $siteSummary.TotalStorageGB
+                'Primary admin' = $site.PrimaryAdmin
+                'Hub' = $site.Hub
+                'Template' = $site.Template
+                'Last activity (UTC)' = $site.LastActivityUTC
+                'Date created' = $site.CreatedDate
+                'Created by' = $site.CreatedBy
+                'Storage limit (GB)' = $site.StorageLimitGB
+                'Storage used (%)' = $site.StorageUsedPercent
+                'Microsoft 365 group' = $site.Microsoft365Group
+                'Files viewed or edited' = $site.FilesViewedOrEdited
+                'Page views' = $site.PageViews
+                'Page visits' = $site.PageVisits
+                'Files' = $site.Files
+                'Sensitivity' = $site.Sensitivity
+                'External sharing' = $site.ExternalSharing
+                'OwnersCount' = $null  # Will be filled in by Get-SiteDetails
+                'MembersCount' = $null # Will be filled in by Get-SiteDetails
+                'ReportDate' = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            }
+        }
+        Write-Log "Built comprehensive site details for $($comprehensiveSiteDetails.Count) sites" -Level Info
+        
         # Get detailed information for all sites
         $siteDetails = Get-SiteDetails -SiteSummaries $siteSummaries -TopSites $topSites -ParallelLimit $ParallelLimit
         
         # Generate Excel report
-        $success = Export-ComprehensiveExcelReport -ExcelFileName $script:excelFileName -SiteSummaries $siteSummaries -AllSiteSummaries $siteDetails.AllSiteSummaries -AllTopFiles $siteDetails.AllTopFiles -AllTopFolders $siteDetails.AllTopFolders -SiteStorageStats $siteDetails.SiteStorageStats -SitePieCharts $siteDetails.SitePieCharts
+        $success = Export-ComprehensiveExcelReport -ExcelFileName $script:excelFileName -SiteSummaries $siteSummaries -AllSiteSummaries $siteDetails.AllSiteSummaries -AllTopFiles $siteDetails.AllTopFiles -AllTopFolders $siteDetails.AllTopFolders -SiteStorageStats $siteDetails.SiteStorageStats -SitePieCharts $siteDetails.SitePieCharts -ComprehensiveSiteDetails $comprehensiveSiteDetails
 
-        # Output 10 largest sites and their sizes to console
-        $topSites = $siteSummaries | Sort-Object StorageGB -Descending | Select-Object -First 10
-        Write-Host "`nTop 10 Largest Sites by Storage:" -ForegroundColor Cyan
-        $header = "{0,-30} {1,-40} {2,12}" -f "Site name", "URL", "Storage (GB)"
+        # Automated export of site summary data to CSV for comparison
+        $csvExportPath = [System.IO.Path]::ChangeExtension($script:excelFileName, ".csv")
+        $siteDetails.AllSiteSummaries | Export-Csv -Path $csvExportPath -NoTypeInformation -Force
+        Write-Log "Site summary data exported to CSV: $csvExportPath" -Level Info
+
+        # Output 10 largest sites and their sizes to console (with recycle bin info)
+        $topSites = $siteSummaries | Sort-Object TotalStorageGB -Descending | Select-Object -First 10
+        Write-Host "`nTop 10 Largest Sites by Total Storage (Including Recycle Bin):" -ForegroundColor Cyan
+        $header = "{0,-30} {1,-40} {2,12} {3,12} {4,12}" -f "Site name", "URL", "Storage (GB)", "Recycle (GB)", "Total (GB)"
         Write-Host $header -ForegroundColor White
-        Write-Host ("-" * 85) -ForegroundColor DarkGray
+        Write-Host ("-" * 120) -ForegroundColor DarkGray
         foreach ($site in $topSites) {
             $siteName = $site.SiteName
             $url = $site.WebUrl
             $storage = if ($site.StorageGB) { [math]::Round($site.StorageGB,2) } else { "-" }
-            $row = "{0,-30} {1,-40} {2,12}" -f $siteName, $url, $storage
+            $recycle = if ($site.RecycleBinGB) { [math]::Round($site.RecycleBinGB,2) } else { "0" }
+            $total = if ($site.TotalStorageGB) { [math]::Round($site.TotalStorageGB,2) } else { "-" }
+            $row = "{0,-30} {1,-40} {2,12} {3,12} {4,12}" -f $siteName, $url, $storage, $recycle, $total
             Write-Host $row -ForegroundColor Gray
+        }
+
+        # Match admin screenshot: header wording and column alignment (with enhanced data)
+        Write-Host "\nActive sites (Enhanced with Recycle Bin Data)" -ForegroundColor Cyan
+        $headerText = "{0,-25} {1,-40} {2,15} {3,15} {4,15}" -f "Site name", "URL", "Storage (GB)", "Recycle (GB)", "Total (GB)"
+        Write-Host $headerText -ForegroundColor White
+        Write-Host ("-" * 110) -ForegroundColor DarkGray
+        foreach ($site in $topSites) {
+            $siteName = $site.SiteName
+            $url = $site.WebUrl
+            $storage = if ($site.StorageGB -is [double]) { [math]::Round($site.StorageGB,2).ToString("F2") } else { $site.StorageGB }
+            $recycle = if ($site.RecycleBinGB -is [double]) { [math]::Round($site.RecycleBinGB,2).ToString("F2") } else { "0.00" }
+            $total = if ($site.TotalStorageGB -is [double]) { [math]::Round($site.TotalStorageGB,2).ToString("F2") } else { $site.TotalStorageGB }
+            $rowText = "{0,-25} {1,-40} {2,15} {3,15} {4,15}" -f $siteName, $url, $storage, $recycle, $total
+            Write-Host $rowText -ForegroundColor Gray
         }
 
         if ($success) {
@@ -2407,3 +1899,54 @@ function Main {
 # Execute the main function
 Main
 #endregion
+
+function Initialize-Modules {
+    $importErrorList = @()
+    try { Import-Module Microsoft.Graph.Sites -ErrorAction Stop; Write-Log "Loaded Microsoft.Graph.Sites module" -Level Success } catch { $importErrorList += "Microsoft.Graph.Sites: $_" }
+    try { Import-Module Microsoft.Graph.Files -ErrorAction Stop; Write-Log "Loaded Microsoft.Graph.Files module" -Level Success } catch { $importErrorList += "Microsoft.Graph.Files: $_" }
+    try { Import-Module Microsoft.Graph.Users -ErrorAction SilentlyContinue; Write-Log "Loaded Microsoft.Graph.Users module" -Level Success } catch { Write-Log "Microsoft.Graph.Users module not available: $_" -Level Warning; $importErrorList += "Microsoft.Graph.Users: $_" }
+    try { Import-Module Microsoft.Graph.Identity.DirectoryManagement -ErrorAction Stop; Write-Log "Loaded Microsoft.Graph.Identity.DirectoryManagement module" -Level Success } catch { $importErrorList += "Microsoft.Graph.Identity.DirectoryManagement: $_" }
+    try { Import-Module ImportExcel -ErrorAction Stop; Write-Log "Loaded ImportExcel module" -Level Success } catch { $importErrorList += "ImportExcel: $_" }
+    if ($importErrorList.Count -gt 0) {
+        Write-Log "Some modules failed to load. Attempting to force update..." -Level Warning
+        foreach ($moduleError in $importErrorList) {
+            $moduleName = $moduleError.Split(':')[0]
+            Write-Log "Force updating module: $moduleName" -Level Info
+            Install-OrUpdateModule -ModuleName $moduleName -MinimumVersion "2.0.0" -Force
+        }
+        Write-Log "Modules were force updated. Please restart PowerShell and run the script again." -Level Warning
+        return $false
+    }
+    return $true
+}
+
+function Get-SiteUserAccessSummary {
+    param(
+        [Parameter(Mandatory=$true)]
+        $Site
+    )
+    $owners = @()
+    $members = @()
+    try {
+        $permissions = Get-MgSitePermission -SiteId $Site.Id -All -ErrorAction SilentlyContinue
+        foreach ($perm in $permissions) {
+            if ($perm.GrantedToV2 -and $perm.GrantedToV2.User) {
+                $userType = if ($perm.GrantedToV2.User.UserType -eq 'Guest') { "External Guest" } else { "Internal" }
+                $userObj = [PSCustomObject]@{
+                    DisplayName = $perm.GrantedToV2.User.DisplayName
+                    UserEmail = $perm.GrantedToV2.User.Email
+                    UserType = $userType
+                    Role = ($perm.Roles -join ', ')
+                }
+                if ($userObj.Role -match 'Owner|Admin') {
+                    $owners += $userObj
+                } else {
+                    $members += $userObj
+                }
+            }
+        }
+    } catch {
+        Write-Log "Failed to get user access for site $($Site.DisplayName): $_" -Level Error
+    }
+    return @{ Owners = $owners; Members = $members }
+}
