@@ -2,82 +2,53 @@
 SharePointAudit.ps1
 
 Description:
-This script audits all SharePoint and OneDrive sites in a Microsoft 365 tenant, gathering storage, file/folder, and user access details. It authenticates using app-only certificate, queries Microsoft Graph, and generates a comprehensive Excel report and CSV export for direct comparison with SharePoint admin exports.
+This script provides comprehensive SharePoint and OneDrive auditing for Microsoft 365 tenants, delivering storage analysis, user access reporting, and detailed file/folder breakdowns. It uses app-only certificate authentication with Microsoft Graph API and generates Excel reports with integrated pie chart data for executive presentations and admin center comparison.
 
-Excel Output:
-- Worksheet: "SharePoint Storage Overview"
-  Columns:
-    - Site name
-    - URL
-    - Teams
-    - Channel sites
-    - IBMode
-    - Storage used (GB)
-    - Recycle bin (GB)
-    - Total storage (GB)
-    - Primary admin
-    - Hub
-    - Template
-    - Last activity (UTC)
-    - Date created
-    - Created by
-    - Storage limit (GB)
-    - Storage used (%)
-    - Microsoft 365 group
-    - Files viewed or edited
-    - Page views
-    - Page visits
-    - Files
-    - Sensitivity
-    - External sharing
-    - OwnersCount
-    - MembersCount
-    - ReportDate
-
-- Worksheet: "Tenant Storage Breakdown" (Pie Chart Data)
-  Columns:
+Excel Report Structure:
+- Worksheet: "SharePoint Storage Overview" (MERGED WITH TENANT PIE CHART DATA)
+  Top Section - Tenant Storage Breakdown (Pie Chart Data):
     - Category (SharePoint Sites, Personal OneDrive, Recycle Bins)
-    - StorageGB
-    - Percentage
-    - SiteCount
+    - StorageGB, Percentage, SiteCount
+  
+  Main Section - Comprehensive Site Details:
+    - Site name, URL, Teams, Channel sites, IBMode
+    - Storage used (GB), Recycle bin (GB), Total storage (GB)
+    - Primary admin, Hub, Template, Last activity (UTC)
+    - Date created, Created by, Storage limit (GB), Storage used (%)
+    - Microsoft 365 group, Files viewed or edited, Page views, Page visits
+    - Files, Sensitivity, External sharing, OwnersCount, MembersCount, ReportDate
 
 - Worksheet: "User & Group Access Overview"
   Columns:
-    - User/Group
-    - Email
-    - Type (Internal, External Guest)
-    - Role
-    - Site
-    - Site URL
-    - Access
-    - Object
-    - Highlight (for external guests)
+    - User/Group, Email, Type (Internal, External Guest), Role
+    - Site, Site URL, Access, Object, Highlight (for external guests)
 
 - Worksheet: "OneDrive Personal Sites"
   Columns:
-    - User Name
-    - Site Name
-    - URL
-    - Storage Used (GB)
-    - Storage Used (%)
-    - Storage Limit (GB)
-    - Last Activity (UTC)
-    - Date Created
-    - Files Count
-    - External Sharing
-    - Site Type
-    - Report Date
+    - User Name, Site Name, URL, Storage Used (GB), Storage Used (%)
+    - Storage Limit (GB), Last Activity (UTC), Date Created, Files Count
+    - External Sharing, Site Type, Report Date
 
-- Worksheet: [site-specific] "$siteName Storage" (for top 10 sites)
-  Columns:
-    - Location (folder breakdown pie chart data)
-    - SizeGB
-    - Top 20 files (Name, Size, Path, Drive, Extension, etc.)
-    - Top 20 folders (FolderPath, SizeGB, SizeMB)
+- Individual Site Worksheets: "[SiteName] Storage" (for top storage sites)
+  Section 1 - Site Storage Breakdown (Pie Chart Data):
+    - Location (Top 10 folders), Size (GB), Type, Details
+  
+  Section 2 - Top 20 Largest Files:
+    - File Name, Size (GB), File Type, File Path
+  
+  Section 3 - Top 20 Largest Folders:
+    - Folder Name, Size (GB), Type, Folder Path
 
-Key Features:
-- Enhanced storage calculations with multiple approaches for accuracy
-- Recycle bin storage analysis across all sites
+Advanced Features:
+- Multi-approach storage calculation methodology for admin center accuracy
+- Enhanced recycle bin analysis across all site drives and endpoints
+- Integrated tenant and site-level pie chart data for Excel visualization
+- Parallel processing with intelligent throttling for improved performance
+- External guest identification and access pattern analysis
+- OneDrive personal site detection, aggregation and separate reporting
+- Site-specific detailed analysis with comprehensive file and folder breakdowns
+- Merged worksheet design combining overview data with pie chart visualization
+- Professional formatting with clear section headers and structured data layout
 - Comprehensive user access reporting including external guests
 - OneDrive personal site detection and aggregation
 - Parallel processing for improved performance
