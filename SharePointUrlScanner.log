@@ -1,0 +1,180 @@
+[2025-08-11 00:13:15] [Info] Script started at 2025-08-11 00:13:15
+[2025-08-11 00:13:15] [Success] SharePoint URL Length Scanner for Excel Files
+[2025-08-11 00:13:15] [Success] =========================================
+[2025-08-11 00:13:46] [Info] SharePoint URL: https://fbaint.sharepoint.com/sites/FinanceManagement/Shared%20Documents/Forms/AllItems.aspx
+[2025-08-11 00:13:46] [Info] Excel limit: 218 characters
+[2025-08-11 00:13:46] [Info] Office app limit: 259 characters
+[2025-08-11 00:13:46] [Info] SharePoint limit: 400 characters
+[2025-08-11 00:14:06] [Info] Report will be saved to: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Desktop\SharePointUrlLengthIssues-20250811_0013.xlsx
+[2025-08-11 00:14:06] [Info] Checking and installing required modules...
+[2025-08-11 00:14:06] [Info] PnP.PowerShell is already installed (Version: 3.1.0)
+[2025-08-11 00:14:06] [Info] ImportExcel is already installed (Version: 7.8.10)
+[2025-08-11 00:14:07] [Success] All required modules loaded successfully
+[2025-08-11 00:14:07] [Info] Derived tenant URL: https://fbaint.sharepoint.com
+[2025-08-11 00:14:07] [Info] Connecting to SharePoint using app-only authentication...
+[2025-08-11 00:14:07] [Error] Error scanning SharePoint: Unexpected response from the server. The content type of the response is "". The status code is "NotFound".
+[2025-08-11 00:14:07] [Warning] Recovery data saved. Script will resume from last successful batch on next run.
+[2025-08-11 00:14:07] [Error] Script execution failed: Unexpected response from the server. The content type of the response is "". The status code is "NotFound".
+[2025-08-11 00:14:07] [Debug] Stack Trace: at Get-SharePointUrlLengths, C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\Fix400CharLimitFilesSharePoint.ps1: line 319
+at Main, C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\Fix400CharLimitFilesSharePoint.ps1: line 577
+at <ScriptBlock>, C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\Fix400CharLimitFilesSharePoint.ps1: line 611
+at <ScriptBlock>, <No file>: line 1
+[2025-08-11 00:17:44] [Info] Script started at 2025-08-11 00:17:44
+[2025-08-11 00:17:44] [Success] SharePoint URL Length Scanner for Excel Files
+[2025-08-11 00:17:44] [Success] =========================================
+[2025-08-11 00:18:10] [Info] SharePoint URL: https://fbaint.sharepoint.com/sites/FinanceManagement
+[2025-08-11 00:18:10] [Info] Excel limit: 218 characters
+[2025-08-11 00:18:10] [Info] Office app limit: 259 characters
+[2025-08-11 00:18:10] [Info] SharePoint limit: 400 characters
+[2025-08-11 00:18:18] [Info] Report will be saved to: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Desktop\SharePointUrlLengthIssues-20250811_0018.xlsx
+[2025-08-11 00:18:18] [Info] Checking and installing required modules...
+[2025-08-11 00:18:18] [Info] PnP.PowerShell is already installed (Version: 3.1.0)
+[2025-08-11 00:18:18] [Info] ImportExcel is already installed (Version: 7.8.10)
+[2025-08-11 00:18:19] [Success] All required modules loaded successfully
+[2025-08-11 00:18:19] [Info] Derived tenant URL: https://fbaint.sharepoint.com
+[2025-08-11 00:18:19] [Info] Connecting to SharePoint using app-only authentication...
+[2025-08-11 00:18:20] [Info] Found 4 document libraries
+[2025-08-11 00:18:20] [Info] Processing library: Documents
+[2025-08-11 00:18:20] [Info] Processing batch 1 for library: Documents
+[2025-08-11 00:18:20] [Warning] Operation failed (Attempt 1/5): A parameter cannot be found that matches parameter name 'Position'.
+[2025-08-11 00:18:22] [Warning] Operation failed (Attempt 2/5): A parameter cannot be found that matches parameter name 'Position'.
+[2025-08-11 00:18:24] [Warning] Operation failed (Attempt 3/5): A parameter cannot be found that matches parameter name 'Position'.
+[2025-08-11 00:18:26] [Warning] Operation failed (Attempt 4/5): A parameter cannot be found that matches parameter name 'Position'.
+[2025-08-11 00:18:28] [Error] Max retries exceeded for operation: Getting items from Documents
+[2025-08-11 00:18:28] [Error] Batch 1 failed for library Documents: A parameter cannot be found that matches parameter name 'Position'.
+[2025-08-11 00:18:28] [Warning] Script will resume from this batch on next run
+[2025-08-11 00:18:28] [Error] Error scanning SharePoint: A parameter cannot be found that matches parameter name 'Position'.
+[2025-08-11 00:18:28] [Warning] Recovery data saved. Script will resume from last successful batch on next run.
+[2025-08-11 00:18:28] [Error] Script execution failed: A parameter cannot be found that matches parameter name 'Position'.
+[2025-08-11 00:18:28] [Debug] Stack Trace: at <ScriptBlock>, C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\Fix400CharLimitFilesSharePoint.ps1: line 343
+at Invoke-WithRetry, C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\Fix400CharLimitFilesSharePoint.ps1: line 156
+at Get-SharePointUrlLengths, C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\Fix400CharLimitFilesSharePoint.ps1: line 344
+at Main, C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\Fix400CharLimitFilesSharePoint.ps1: line 577
+at <ScriptBlock>, C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\Fix400CharLimitFilesSharePoint.ps1: line 611
+at <ScriptBlock>, <No file>: line 1
+[2025-08-11 00:21:03] [Info] Script started at 2025-08-11 00:21:03
+[2025-08-11 00:21:03] [Success] SharePoint URL Length Scanner for Excel Files
+[2025-08-11 00:21:03] [Success] =========================================
+[2025-08-11 00:21:16] [Info] SharePoint URL: https://fbaint.sharepoint.com/sites/FinanceManagement/
+[2025-08-11 00:21:16] [Info] Excel limit: 218 characters
+[2025-08-11 00:21:16] [Info] Office app limit: 259 characters
+[2025-08-11 00:21:16] [Info] SharePoint limit: 400 characters
+[2025-08-11 00:21:26] [Info] Report will be saved to: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Desktop\SharePointUrlLengthIssues-20250811_0021.xlsx
+[2025-08-11 00:21:26] [Info] Checking and installing required modules...
+[2025-08-11 00:21:26] [Info] PnP.PowerShell is already installed (Version: 3.1.0)
+[2025-08-11 00:21:26] [Info] ImportExcel is already installed (Version: 7.8.10)
+[2025-08-11 00:21:27] [Success] All required modules loaded successfully
+[2025-08-11 00:21:27] [Info] Derived tenant URL: https://fbaint.sharepoint.com
+[2025-08-11 00:21:27] [Info] Connecting to SharePoint using app-only authentication...
+[2025-08-11 00:21:28] [Info] Found 4 document libraries
+[2025-08-11 00:21:28] [Info] Processing library: Documents
+[2025-08-11 00:21:28] [Info] Processing batch 1 for library: Documents
+[2025-08-11 00:21:48] [Success] Batch 1 completed. Processed 17818 items. Total items: 17818
+[2025-08-11 00:21:48] [Info] Found 15232 files in Documents
+[2025-08-11 00:21:48] [Success] Completed processing library: Documents
+[2025-08-11 00:21:48] [Info] Processing library: Form Templates
+[2025-08-11 00:21:48] [Info] Processing batch 1 for library: Form Templates
+[2025-08-11 00:21:49] [Success] Batch 1 completed. Processed 0 items. Total items: 0
+[2025-08-11 00:21:49] [Info] Found 0 files in Form Templates
+[2025-08-11 00:21:49] [Success] Completed processing library: Form Templates
+[2025-08-11 00:21:49] [Info] Processing library: Site Assets
+[2025-08-11 00:21:49] [Info] Processing batch 1 for library: Site Assets
+[2025-08-11 00:21:49] [Success] Batch 1 completed. Processed 4 items. Total items: 4
+[2025-08-11 00:21:49] [Info] Found 1 files in Site Assets
+[2025-08-11 00:21:49] [Success] Completed processing library: Site Assets
+[2025-08-11 00:21:49] [Info] Processing library: Style Library
+[2025-08-11 00:21:49] [Info] Processing batch 1 for library: Style Library
+[2025-08-11 00:21:49] [Success] Batch 1 completed. Processed 0 items. Total items: 0
+[2025-08-11 00:21:49] [Info] Found 0 files in Style Library
+[2025-08-11 00:21:49] [Success] Completed processing library: Style Library
+[2025-08-11 00:21:49] [Info] Removed recovery file: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\Recovery_https___fbaint_sharepoint_com_sites_FinanceManagement_.json
+[2025-08-11 00:21:49] [Info] Removed batch log file: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\BatchLog_https___fbaint_sharepoint_com_sites_FinanceManagement_.csv
+[2025-08-11 00:21:49] [Info] Generating Excel report...
+[2025-08-11 00:21:50] [Success] Excel report created successfully: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Desktop\SharePointUrlLengthIssues-20250811_0021.xlsx
+[2025-08-11 00:21:50] [Success] Report completed successfully: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Desktop\SharePointUrlLengthIssues-20250811_0021.xlsx
+[2025-08-11 00:21:50] [Info] Opening report...
+[2025-08-11 00:29:54] [Info] Script started at 2025-08-11 00:29:54
+[2025-08-11 00:29:54] [Success] SharePoint URL Length Scanner for Excel Files
+[2025-08-11 00:29:54] [Success] =========================================
+[2025-08-11 17:53:04] [Info] Script started at 2025-08-11 17:53:04
+[2025-08-11 17:53:04] [Success] SharePoint URL Length Scanner for Excel Files
+[2025-08-11 17:53:04] [Success] =========================================
+[2025-08-11 17:53:36] [Info] SharePoint URL: https://fbaint.sharepoint.com/sites/FinanceManagement/
+[2025-08-11 17:53:36] [Info] Excel limit: 218 characters
+[2025-08-11 17:53:36] [Info] Office app limit: 259 characters
+[2025-08-11 17:53:36] [Info] SharePoint limit: 400 characters
+[2025-08-11 18:39:54] [Info] Report will be saved to: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Desktop\SharePointUrlLengthIssues-20250811_1753.xlsx
+[2025-08-11 18:39:54] [Info] Checking and installing required modules...
+[2025-08-11 18:39:54] [Info] PnP.PowerShell is already installed (Version: 3.1.0)
+[2025-08-11 18:39:54] [Info] ImportExcel is already installed (Version: 7.8.10)
+[2025-08-11 18:39:55] [Success] All required modules loaded successfully
+[2025-08-11 18:39:55] [Info] Derived tenant URL: https://fbaint.sharepoint.com
+[2025-08-11 18:39:55] [Info] Connecting to SharePoint using app-only authentication...
+[2025-08-11 18:39:57] [Info] Found 4 document libraries
+[2025-08-11 18:39:57] [Info] Processing library: Documents
+[2025-08-11 18:39:57] [Info] Processing batch 1 for library: Documents
+[2025-08-11 18:40:18] [Success] Batch 1 completed. Processed 18039 items. Total items: 18039
+[2025-08-11 18:40:18] [Info] Found 15424 files in Documents
+[2025-08-11 18:40:18] [Success] Completed processing library: Documents
+[2025-08-11 18:40:18] [Info] Processing library: Form Templates
+[2025-08-11 18:40:18] [Info] Processing batch 1 for library: Form Templates
+[2025-08-11 18:40:19] [Success] Batch 1 completed. Processed 0 items. Total items: 0
+[2025-08-11 18:40:19] [Info] Found 0 files in Form Templates
+[2025-08-11 18:40:19] [Success] Completed processing library: Form Templates
+[2025-08-11 18:40:19] [Info] Processing library: Site Assets
+[2025-08-11 18:40:19] [Info] Processing batch 1 for library: Site Assets
+[2025-08-11 18:40:19] [Success] Batch 1 completed. Processed 4 items. Total items: 4
+[2025-08-11 18:40:19] [Info] Found 1 files in Site Assets
+[2025-08-11 18:40:19] [Success] Completed processing library: Site Assets
+[2025-08-11 18:40:19] [Info] Processing library: Style Library
+[2025-08-11 18:40:19] [Info] Processing batch 1 for library: Style Library
+[2025-08-11 18:40:19] [Success] Batch 1 completed. Processed 0 items. Total items: 0
+[2025-08-11 18:40:19] [Info] Found 0 files in Style Library
+[2025-08-11 18:40:19] [Success] Completed processing library: Style Library
+[2025-08-11 18:40:19] [Info] Removed recovery file: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\Recovery_https___fbaint_sharepoint_com_sites_FinanceManagement_.json
+[2025-08-11 18:40:19] [Info] Removed batch log file: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\BatchLog_https___fbaint_sharepoint_com_sites_FinanceManagement_.csv
+[2025-08-11 18:40:19] [Info] Generating Excel report...
+[2025-08-11 18:40:20] [Success] Excel report created successfully: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Desktop\SharePointUrlLengthIssues-20250811_1753.xlsx
+[2025-08-11 18:40:20] [Success] Report completed successfully: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Desktop\SharePointUrlLengthIssues-20250811_1753.xlsx
+[2025-08-11 18:40:20] [Info] Opening report...
+[2025-08-11 18:43:37] [Info] Script started at 2025-08-11 18:43:37
+[2025-08-11 18:43:37] [Success] SharePoint URL Length Scanner for Excel Files
+[2025-08-11 18:43:37] [Success] =========================================
+[2025-08-11 18:44:09] [Info] SharePoint URL: https://fbaint.sharepoint.com/sites/JourneFinance/
+[2025-08-11 18:44:09] [Info] Excel limit: 218 characters
+[2025-08-11 18:44:09] [Info] Office app limit: 259 characters
+[2025-08-11 18:44:09] [Info] SharePoint limit: 400 characters
+[2025-08-11 18:44:29] [Info] Report will be saved to: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Desktop\JourneFinanceSharePointUrlLengthIssues-20250811_1844.xlsx
+[2025-08-11 18:44:29] [Info] Checking and installing required modules...
+[2025-08-11 18:44:29] [Info] PnP.PowerShell is already installed (Version: 3.1.0)
+[2025-08-11 18:44:29] [Info] ImportExcel is already installed (Version: 7.8.10)
+[2025-08-11 18:44:30] [Success] All required modules loaded successfully
+[2025-08-11 18:44:30] [Info] Derived tenant URL: https://fbaint.sharepoint.com
+[2025-08-11 18:44:30] [Info] Connecting to SharePoint using app-only authentication...
+[2025-08-11 18:44:31] [Info] Found 4 document libraries
+[2025-08-11 18:44:31] [Info] Processing library: Documents
+[2025-08-11 18:44:31] [Info] Processing batch 1 for library: Documents
+[2025-08-11 18:46:39] [Success] Batch 1 completed. Processed 110648 items. Total items: 110648
+[2025-08-11 18:46:40] [Info] Found 95252 files in Documents
+[2025-08-11 18:46:42] [Success] Completed processing library: Documents
+[2025-08-11 18:46:42] [Info] Processing library: Form Templates
+[2025-08-11 18:46:42] [Info] Processing batch 1 for library: Form Templates
+[2025-08-11 18:46:43] [Success] Batch 1 completed. Processed 0 items. Total items: 0
+[2025-08-11 18:46:43] [Info] Found 0 files in Form Templates
+[2025-08-11 18:46:43] [Success] Completed processing library: Form Templates
+[2025-08-11 18:46:43] [Info] Processing library: Site Assets
+[2025-08-11 18:46:43] [Info] Processing batch 1 for library: Site Assets
+[2025-08-11 18:46:43] [Success] Batch 1 completed. Processed 7 items. Total items: 7
+[2025-08-11 18:46:43] [Info] Found 3 files in Site Assets
+[2025-08-11 18:46:43] [Success] Completed processing library: Site Assets
+[2025-08-11 18:46:43] [Info] Processing library: Style Library
+[2025-08-11 18:46:43] [Info] Processing batch 1 for library: Style Library
+[2025-08-11 18:46:43] [Success] Batch 1 completed. Processed 0 items. Total items: 0
+[2025-08-11 18:46:43] [Info] Found 0 files in Style Library
+[2025-08-11 18:46:43] [Success] Completed processing library: Style Library
+[2025-08-11 18:46:43] [Info] Removed recovery file: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\Recovery_https___fbaint_sharepoint_com_sites_JourneFinance_.json
+[2025-08-11 18:46:43] [Info] Removed batch log file: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Documents\GitHubRepos\Powershell-scripts\BatchLog_https___fbaint_sharepoint_com_sites_JourneFinance_.csv
+[2025-08-11 18:46:43] [Info] Generating Excel report...
+[2025-08-11 18:46:44] [Success] Excel report created successfully: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Desktop\JourneFinanceSharePointUrlLengthIssues-20250811_1844.xlsx
+[2025-08-11 18:46:44] [Success] Report completed successfully: C:\Users\Timothy.MacLatchy\OneDrive - Journe Brands\Desktop\JourneFinanceSharePointUrlLengthIssues-20250811_1844.xlsx
+[2025-08-11 18:46:44] [Info] Opening report...
