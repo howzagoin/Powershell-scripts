@@ -1,0 +1,4 @@
+[2025-08-12 14:28:55] [INFO] Found 33042 Excel files and 0 Access files
+[2025-08-12 14:28:55] [INFO] Processing 33042 Excel files...
+[2025-08-12 14:28:55] [INFO] Processing in 34 batches of 1000 files each for memory optimization
+[2025-08-12 14:28:55] [INFO] Processing batch 1 of 34 (1000 files)

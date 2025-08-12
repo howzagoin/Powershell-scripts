@@ -1,5 +1,4 @@
 <#
-<<<<<<< HEAD
 .DESCRIPTION
     Optimized SharePoint audit script using Microsoft Graph API for maximum performance.
     Generates comprehensive Excel reports with minimal API calls and memory footprint.
@@ -18,66 +17,6 @@
     - Files.Read.All
     - Files.ReadWrite.All
     (Grant admin consent for all above permissions)
-=======
-SharePointAudit.ps1
-
-Description:
-This script provides comprehensive SharePoint and OneDrive auditing for Microsoft 365 tenants, delivering storage analysis, user access reporting, and detailed file/folder breakdowns. It uses app-only certificate authentication with Microsoft Graph API and generates Excel reports with integrated pie chart data for executive presentations and admin center comparison.
-
-Excel Report Structure:
-- Worksheet: "SharePoint Storage Overview" (MERGED WITH TENANT PIE CHART DATA)
-  Top Section - Tenant Storage Breakdown (Pie Chart Data):
-    - Category (SharePoint Sites, Personal OneDrive, Recycle Bins)
-    - StorageGB, Percentage, SiteCount
-  
-  Main Section - Comprehensive Site Details:
-    - Site name, URL, Teams, Channel sites, IBMode
-    - Storage used (GB), Recycle bin (GB), Total storage (GB)
-    - Primary admin, Hub, Template, Last activity (UTC)
-    - Date created, Created by, Storage limit (GB), Storage used (%)
-    - Microsoft 365 group, Files viewed or edited, Page views, Page visits
-    - Files, Sensitivity, External sharing, OwnersCount, MembersCount, ReportDate
-
-- Worksheet: "User & Group Access Overview"
-  Columns:
-    - User/Group, Email, Type (Internal, External Guest), Role
-    - Site, Site URL, Access, Object, Highlight (for external guests)
-
-- Worksheet: "OneDrive Personal Sites"
-  Columns:
-    - User Name, Site Name, URL, Storage Used (GB), Storage Used (%)
-    - Storage Limit (GB), Last Activity (UTC), Date Created, Files Count
-    - External Sharing, Site Type, Report Date
-
-- Individual Site Worksheets: "[SiteName] Storage" (for top storage sites)
-  Section 1 - Site Storage Breakdown (Pie Chart Data):
-    - Location (Top 10 folders), Size (GB), Type, Details
-  
-  Section 2 - Top 20 Largest Files:
-    - File Name, Size (GB), File Type, File Path
-  
-  Section 3 - Top 20 Largest Folders:
-    - Folder Name, Size (GB), Type, Folder Path
-
-Advanced Features:
-- Multi-approach storage calculation methodology for admin center accuracy
-- Enhanced recycle bin analysis across all site drives and endpoints
-- Integrated tenant and site-level pie chart data for Excel visualization
-- Parallel processing with intelligent throttling for improved performance
-- External guest identification and access pattern analysis
-- OneDrive personal site detection, aggregation and separate reporting
-- Site-specific detailed analysis with comprehensive file and folder breakdowns
-- Merged worksheet design combining overview data with pie chart visualization
-- Professional formatting with clear section headers and structured data layout
-- Comprehensive user access reporting including external guests
-- OneDrive personal site detection and aggregation
-- Parallel processing for improved performance
-- Detailed file and folder analysis for largest sites
-- Pie chart data for tenant-level and site-level storage breakdowns
-
-CSV Output:
-- Contains the same columns as "SharePoint Storage Overview" worksheet for direct comparison with admin export.
->>>>>>> feb7a698d8c86a9181f1d549a09d100969c0d0d0
 #>
 param(
     [string]$ClientId = '278b9af9-888d-4344-93bb-769bdd739249',
@@ -109,6 +48,7 @@ $script:operationStartTime = Get-Date
 $script:siteCache = @{}
 $script:permissionCache = @{}
 $script:groupCache = @{}
+$script:groupMemberCache = @{} # ✅ ADDED: Cache for group members
 $script:progressId = 1
 $script:performanceCounters = @{
     ApiCalls = 0
@@ -527,6 +467,26 @@ function Get-GroupWithCache($groupId) {
     }
 }
 
+# ✅ ADDED: Function to get group members with caching
+function Get-GroupMembersWithCache($groupId) {
+    if ($script:groupMemberCache.ContainsKey($groupId)) {
+        $script:performanceCounters.CacheHits++
+        return $script:groupMemberCache[$groupId]
+    }
+    try {
+        # Select only necessary properties to improve performance
+        $uri = "https://graph.microsoft.com/v1.0/groups/$groupId/members?`$select=id,displayName,userPrincipalName"
+        $members = Get-AllGraphPages -InitialUri $uri
+        $script:groupMemberCache[$groupId] = $members
+        return $members
+    } catch {
+        Write-Log "Could not retrieve members for group $groupId : $($_)" -Level Warning
+        $script:groupMemberCache[$groupId] = @() # Cache the failure to avoid repeated failed calls
+        return @()
+    }
+}
+
+
 # Fast SharePoint site discovery with direct API totals, now with Delta Query support
 function Get-AllSharePointSites {
     param(
@@ -721,47 +681,71 @@ function Get-SiteDetails($site) {
         Write-Log "Error in group check logic for $($details.SiteName): $($_)" -Level Warning
     }
     
-    # Get permissions with comprehensive null checks
+    # ✅ FIXED: Get permissions, now handles both direct user access and group-based access
     try {
         if ($site.id) {
             $permissions = Get-PermissionsWithCache -SiteId $site.id
             if ($permissions -and $permissions.Count -gt 0) {
                 foreach ($perm in $permissions) {
                     try {
-                        if ($perm -and $perm.grantedToV2 -and $perm.grantedToV2.user) {
-                            $user = $perm.grantedToV2.user
-                            $userPrincipalName = if ($user.userPrincipalName) { $user.userPrincipalName } else { "" }
+                        # Skip if no identity or roles are assigned
+                        if (-not ($perm -and $perm.grantedToV2 -and $perm.roles -and $perm.roles.Count -gt 0)) {
+                            continue
+                        }
+
+                        $role = $perm.roles -join ', '
+
+                        # Helper Action to add a user to the details object, avoids code duplication
+                        $addUserAction = {
+                            param($userObject, $assignedRole)
                             
-                            # Skip if no UPN (invalid user)
-                            if ([string]::IsNullOrWhiteSpace($userPrincipalName)) {
-                                continue
-                            }
-                            
-                            # Determine user type
+                            # Skip if no user object or UPN
+                            if (-not ($userObject -and $userObject.userPrincipalName)) { return }
+
+                            $userPrincipalName = $userObject.userPrincipalName
                             $userType = if ($userPrincipalName -like "*#EXT#*") { "External Guest" } else { "Internal" }
                             
-                            $userObj = [PSCustomObject]@{
-                                DisplayName = if ($user.displayName) { $user.displayName } else { "Unknown User" }
+                            $userObjToAdd = [PSCustomObject]@{
+                                DisplayName       = if ($userObject.displayName) { $userObject.displayName } else { "Unknown User" }
                                 UserPrincipalName = $userPrincipalName
-                                UserType = $userType
-                                Role = if ($perm.roles -and $perm.roles.Count -gt 0) { $perm.roles -join ', ' } else { "Unknown" }
-                                SiteName = $details.SiteName
-                                SiteUrl = $details.SiteUrl
+                                UserType          = $userType
+                                Role              = $assignedRole
+                                SiteName          = $details.SiteName
+                                SiteUrl           = $details.SiteUrl
                             }
-                            
+
                             # Categorize user by role
-                            if ($userObj.Role -match 'owner|admin') { 
-                                $details.Owners += $userObj 
+                            if ($assignedRole -match 'owner|admin') { 
+                                $details.Owners += $userObjToAdd
                             } else { 
-                                $details.Members += $userObj 
+                                $details.Members += $userObjToAdd
                             }
                             
                             if ($userType -eq "External Guest") { 
-                                $details.ExternalGuests += $userObj 
+                                $details.ExternalGuests += $userObjToAdd
                             }
                         }
+
+                        # Case 1: Permission is granted directly to a user
+                        if ($perm.grantedToV2.user) {
+                            & $addUserAction -userObject $perm.grantedToV2.user -assignedRole $role
+                        }
+
+                        # Case 2: Permission is granted to a group
+                        elseif ($perm.grantedToV2.group) {
+                            $groupId = $perm.grantedToV2.group.id
+                            if ($groupId) {
+                                Write-Log "Expanding group permission for group ID $groupId with role '$role' on site $($details.SiteName)" -Level Debug
+                                $groupMembers = Get-GroupMembersWithCache -GroupId $groupId
+                                foreach ($member in $groupMembers) {
+                                    # The member object from /members is a user object, so pass it to the helper
+                                    & $addUserAction -userObject $member -assignedRole $role
+                                }
+                            }
+                        }
+
                     } catch {
-                        Write-Log "Error processing permission for site $($details.SiteName): $($_)" -Level Warning
+                        Write-Log "Error processing a specific permission entry for site $($details.SiteName): $($_)" -Level Warning
                         continue
                     }
                 }
@@ -770,7 +754,7 @@ function Get-SiteDetails($site) {
             }
         }
     } catch {
-        Write-Log "Error retrieving permissions for site $($details.SiteName): $($_)" -Level Warning
+        Write-Log "General error retrieving permissions for site $($details.SiteName): $($_)" -Level Warning
     }
     
     return $details
@@ -1036,13 +1020,10 @@ try {
             }
         }
         
-        Write-Log "Processing $($sitesToProcess.Count) sites..." -Level Info
+        Write-Log "Processing $($sitesToProcess.Count) new sites..." -Level Info
         
-        if ($sitesToProcess.Count -eq 0) {
-            Write-Log "No sites to process after filtering." -Level Warning
-            if ($allSiteDetails.Count -eq 0) {
-                throw "No sites to process and no existing site details found."
-            }
+        if ($sitesToProcess.Count -eq 0 -and $allSiteDetails.Count -eq 0) {
+            Write-Log "No sites to process and no existing site details found." -Level Warning
         }
         
         $siteCounter = 0
@@ -1081,7 +1062,6 @@ try {
                     } catch {
                         Write-Log "Error adding site ID to processed list: $($_)" -Level Warning
                     }
-                    Write-Log "Successfully processed site: ${siteName}" -Level Debug
                 } else {
                     Write-Log "Get-SiteDetails returned null for site: ${siteName}" -Level Warning
                     # Create error placeholder
@@ -1151,28 +1131,61 @@ try {
     }
     # Worksheet 1: Site Summary
     Show-Progress -Activity "Generating Excel Report" -Status "Creating Site Summary..." -PercentComplete 33
-    $siteSummaryData = $siteDetails | Select-Object @{N='Site Name';E={$_.SiteName}}, @{N='Storage Used GB';E={$_.StorageGB}}, @{N='Recycle Bin GB';E={$_.RecycleBinGB}}, @{N='Total Storage GB';E={$_.StorageGB + $_.RecycleBinGB}}, @{N='Storage Limit GB';E={$_.StorageLimitGB}}, @{N='Storage Used % of Tenant';E={"{0:P4}" -f ($_.StorageUsedPercentOfTenant / 100)}}, @{N='File Count';E={$_.TotalFiles}}, @{N='Linked M365 Group';E={$_.GroupName}}, @{N='Owners';E={if($_.Owners){$_.Owners.Count}else{0}}}, @{N='Members+Visitors';E={if($_.Members){$_.Members.Count}else{0}}}, @{N='URL';E={$_.SiteUrl}}
+    $siteSummaryData = $siteDetails | Select-Object \
+        @{N='Site Name';E={ $_.SiteName }}, \
+        @{N='Storage Used GB';E={ [math]::Round([double]$_.StorageGB, 2) }}, \
+        @{N='Recycle Bin GB';E={ [math]::Round([double]$_.RecycleBinGB, 2) }}, \
+        @{N='Total Storage GB';E={ [math]::Round(([double]$_.StorageGB + [double]$_.RecycleBinGB), 2) }}, \
+        @{N='Storage Limit GB';E={ if ($_.StorageLimitGB -ne $null -and $_.StorageLimitGB -gt 0) { [math]::Round([double]$_.StorageLimitGB, 2) } else { "N/A" } }}, \
+        @{N='Storage Used % of Tenant';E={ if ($script:tenantTotalStorageGB -gt 0) { "{0:P4}" -f (([double]$_.StorageGB + [double]$_.RecycleBinGB) / $script:tenantTotalStorageGB) } else { "N/A" } }}, \
+        @{N='File Count';E={ if ($_.TotalFiles -ne $null) { $_.TotalFiles } else { 0 } }}, \
+        @{N='Linked M365 Group';E={ if ($_.GroupName) { $_.GroupName } else { "No" } }}, \
+        @{N='Owners';E={ if ($_.Owners -is [System.Collections.IEnumerable]) { ($_.Owners | Where-Object { $_ -ne $null }).Count } else { 0 } }}, \
+        @{N='Members+Visitors';E={ if ($_.Members -is [System.Collections.IEnumerable]) { ($_.Members | Where-Object { $_ -ne $null }).Count } else { 0 } }}, \
+        @{N='URL';E={ $_.SiteUrl }}
     Export-ExcelWorksheet -Data $siteSummaryData -Path $excelFile -WorksheetName "Site_Summary" -Title "SharePoint Site Summary Report"
+    
     # Worksheet 2: User Access Summary
     Show-Progress -Activity "Generating Excel Report" -Status "Creating User Access Summary..." -PercentComplete 66
     $userAccessData = [System.Collections.Generic.Dictionary[string,psobject]]::new()
     foreach ($site in $siteDetails) {
-        $allUsers = $site.Owners + $site.Members
+        $allUsers = @()
+        if ($site.Owners) { $allUsers += $site.Owners }
+        if ($site.Members) { $allUsers += $site.Members }
+        if ($site.ExternalGuests) { $allUsers += $site.ExternalGuests }
+        # Add any other permissioned users if present
+        if ($site.AllUsers) { $allUsers += $site.AllUsers }
         foreach ($user in $allUsers) {
-            if ($user.UserPrincipalName) {
+            if ($user -and $user.UserPrincipalName) {
                 $key = $user.UserPrincipalName
                 if (-not $userAccessData.ContainsKey($key)) {
-                    $userAccessData[$key] = [PSCustomObject]@{ 'User/Group' = $user.DisplayName; 'User Principal Name' = $key; 'Type' = $user.UserType; Sites = [System.Collections.Generic.List[string]]::new(); Roles = [System.Collections.Generic.List[string]]::new() }
+                    $userAccessData[$key] = [PSCustomObject]@{
+                        'User/Group' = $user.DisplayName
+                        'User Principal Name' = $key
+                        'Type' = $user.UserType
+                        Sites = [System.Collections.Generic.List[string]]::new()
+                        Roles = [System.Collections.Generic.List[string]]::new()
+                    }
                 }
-                $userAccessData[$key].Sites.Add($site.SiteName)
-                $userAccessData[$key].Roles.Add($user.Role)
+                if (-not $userAccessData[$key].Sites.Contains($site.SiteName)) {
+                    $userAccessData[$key].Sites.Add($site.SiteName)
+                }
+                if ($user.Role -and (-not $userAccessData[$key].Roles.Contains($user.Role))) {
+                    $userAccessData[$key].Roles.Add($user.Role)
+                }
             }
         }
     }
-    $userAccessExport = $userAccessData.Values | ForEach-Object {
-        [PSCustomObject]@{ 'User/Group' = $_.'User/Group'; 'User Principal Name' = $_.'User Principal Name'; Type = $_.Type; 'Site Count' = $_.Sites.Count; Sites = $_.Sites -join "; "; 'Roles (Unique)' = (($_.Roles | Sort-Object -Unique) -join ", ") }
+    
+    # ✅ FIXED: Initialize as an empty array to prevent null argument error if no users are found.
+    $userAccessExport = @()
+    if ($userAccessData.Values.Count -gt 0) {
+        $userAccessExport = $userAccessData.Values | ForEach-Object {
+            [PSCustomObject]@{ 'User/Group' = $_.'User/Group'; 'User Principal Name' = $_.'User Principal Name'; Type = $_.Type; 'Site Count' = $_.Sites.Count; Sites = $_.Sites -join "; "; 'Roles (Unique)' = (($_.Roles | Sort-Object -Unique) -join ", ") }
+        }
     }
     Export-ExcelWorksheet -Data $userAccessExport -Path $excelFile -WorksheetName "User_Access_Summary" -Title "User Access Summary Report"
+
     # Worksheet 3: Top Files & Folders Analysis for largest site
     Show-Progress -Activity "Generating Excel Report" -Status "Analyzing largest site for files/folders..." -PercentComplete 90
     $largestSiteDetails = $siteDetails | Where-Object { $_.SiteName -notlike "*ERROR*" } | Sort-Object -Property @{Expression={$_.StorageGB + $_.RecycleBinGB}} -Descending | Select-Object -First 1
